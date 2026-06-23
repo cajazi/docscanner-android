@@ -1,4 +1,4 @@
-﻿package com.dev.docscannerpdf.ui
+package com.dev.docscannerpdf.ui
 
 import android.util.Log
 import androidx.activity.compose.BackHandler
@@ -80,7 +80,7 @@ internal fun DocScannerApp(host: MainActivity) {
                     )
                 } else if (host.showBackupRestore) {
                     BackupRestoreScreen(
-                        host.lastBackupInfo = host.lastBackupInfo,
+                        lastBackupInfo = host.lastBackupInfo,
                         isProcessing = host.backupProcessing,
                         statusMessage = host.backupStatusMessage,
                         pendingRestore = host.pendingRestoreArchive,
@@ -107,19 +107,19 @@ internal fun DocScannerApp(host: MainActivity) {
                         onCreatePin = { pin, enableBiometrics ->
                             host.appLockRepository.savePin(pin)
                             host.appLockRepository.setBiometricsEnabled(enableBiometrics && host.canUseBiometrics())
-                            refreshAppLockSettings()
+                            host.refreshAppLockSettings()
                             host.appUnlocked = true
                             host.appLockMessage = "App Lock enabled."
                         },
                         onChangePin = { pin ->
                             host.appLockRepository.savePin(pin)
-                            refreshAppLockSettings()
+                            host.refreshAppLockSettings()
                             host.appUnlocked = true
                             host.appLockMessage = "PIN updated."
                         },
                         onLockEnabledChange = { enabled ->
                             host.appLockRepository.setLockEnabled(enabled)
-                            refreshAppLockSettings()
+                            host.refreshAppLockSettings()
                             host.appUnlocked = !enabled || host.appUnlocked
                         },
                         onBiometricsEnabledChange = { enabled ->
@@ -127,12 +127,12 @@ internal fun DocScannerApp(host: MainActivity) {
                                 host.appLockMessage = "Biometrics are not available on this device."
                             } else {
                                 host.appLockRepository.setBiometricsEnabled(enabled)
-                                refreshAppLockSettings()
+                                host.refreshAppLockSettings()
                             }
                         },
                         onDisableLock = {
                             host.appLockRepository.clearLock()
-                            refreshAppLockSettings()
+                            host.refreshAppLockSettings()
                             host.appUnlocked = true
                             host.appLockMessage = "App Lock disabled."
                         },
@@ -157,8 +157,8 @@ internal fun DocScannerApp(host: MainActivity) {
                             documents = uiState.documents,
                             initialDocument = document,
                             onDismiss = { host.viewerDocumentPendingRename = null },
-                            onRename = host.viewModelhost::renameDocument,
-                            onValidationError = host.viewModelhost::showError
+                            onRename = host.viewModel::renameDocument,
+                            onValidationError = host.viewModel::showError
                         )
                     }
                     host.viewerDocumentPendingDelete?.let { document ->
@@ -339,7 +339,7 @@ internal fun DocScannerApp(host: MainActivity) {
                             host.showPdfTools = true
                             host.showAiTools = false
                         },
-                        onComingSoon = host.viewModelhost::showError
+                        onComingSoon = host.viewModel::showError
                     )
                 } else if (host.showPdfTools) {
                     PDFToolsScreen(
@@ -387,7 +387,7 @@ internal fun DocScannerApp(host: MainActivity) {
                             host.showPdfToWord = true
                             host.showPdfTools = false
                         },
-                        onRenameDocument = host.viewModelhost::renameDocument,
+                        onRenameDocument = host.viewModel::renameDocument,
                         onShareExtractedText = host::shareExtractedText,
                         onShareCleanedText = host::shareCleanedText,
                         onExportCleanedText = host::exportCleanedText,
@@ -593,7 +593,7 @@ internal fun DocScannerApp(host: MainActivity) {
                     )
                 } else {
                     ScannerDashboardScreen(
-                        host.viewModel = host.viewModel,
+                        viewModel = host.viewModel,
                         onStartScan = { host.startDocumentScanner(pageLimit = 20) },
                         onPdfTools = { host.showPdfTools = true },
                         onImportImages = { host.imageImportLauncher.launch("image/*") },
@@ -619,7 +619,7 @@ internal fun DocScannerApp(host: MainActivity) {
                         onShareExtractedText = host::shareExtractedText,
                         onShareCleanedText = host::shareCleanedText,
                         onExportCleanedText = host::exportCleanedText,
-                        onRenameDocument = host.viewModelhost::renameDocument,
+                        onRenameDocument = host.viewModel::renameDocument,
                         onDeleteDocument = host::deleteDocument
                     )
                 }

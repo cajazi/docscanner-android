@@ -1,4 +1,4 @@
-﻿package com.dev.docscannerpdf
+package com.dev.docscannerpdf
 
 import android.app.Activity
 import android.content.ActivityNotFoundException
@@ -59,7 +59,7 @@ import com.dev.docscannerpdf.domain.pdf.PdfRenderHelper
 import com.dev.docscannerpdf.navigation.canHandleSystemBack
 import com.dev.docscannerpdf.navigation.handleSystemBack
 import com.dev.docscannerpdf.presentation.EditedPdfOutput
- com.dev.docscannerpdf.presentation.MergeOutput
+import com.dev.docscannerpdf.presentation.MergeOutput
 import com.dev.docscannerpdf.presentation.PdfImageOutput
 import com.dev.docscannerpdf.presentation.PdfTextExportOutput
 import com.dev.docscannerpdf.presentation.PendingImageImport
@@ -853,7 +853,7 @@ class MainActivity : FragmentActivity() {
             Uri.fromFile(destination)
         }
 
-    private suspend fun applySignatureToImage(imageUri: Uri, strokes: List<List<androidx.compose.ui.geometry.Offset>>): Uri {
+    suspend fun applySignatureToImage(imageUri: Uri, strokes: List<List<androidx.compose.ui.geometry.Offset>>): Uri {
         return withContext(Dispatchers.IO) {
             val original = loadBitmapFromUri(imageUri) ?: throw IllegalStateException("Unable to load image")
             val mutable = original.copy(Bitmap.Config.ARGB_8888, true)
@@ -902,7 +902,7 @@ class MainActivity : FragmentActivity() {
         }
     }
 
-    private suspend fun cropImageCenter(imageUri: Uri): Uri {
+    suspend fun cropImageCenter(imageUri: Uri): Uri {
         return withContext(Dispatchers.IO) {
             val bmp = loadBitmapFromUri(imageUri) ?: throw IllegalStateException("Unable to load image for crop")
             val w = bmp.width; val h = bmp.height
@@ -913,7 +913,7 @@ class MainActivity : FragmentActivity() {
         }
     }
 
-    private suspend fun saveImageToGallery(uri: Uri, title: String) {
+    suspend fun saveImageToGallery(uri: Uri, title: String) {
         withContext(Dispatchers.IO) {
             val bitmap = loadBitmapFromUri(uri) ?: throw IllegalStateException("Unable to load image to save")
             // Use MediaStore to insert image
