@@ -1,5 +1,7 @@
 package com.dev.docscannerpdf.ui.debug
 
+import android.content.Context
+import android.net.Uri
 import android.os.SystemClock
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -7,6 +9,8 @@ import com.dev.docscannerpdf.network.ApiConfig
 import com.dev.docscannerpdf.network.EngineCapabilitiesResponse
 import com.dev.docscannerpdf.network.HealthResponse
 import com.dev.docscannerpdf.network.NetworkResult
+import com.dev.docscannerpdf.process.ProcessDocumentUiState
+import com.dev.docscannerpdf.process.ProcessDocumentUseCase
 import com.dev.docscannerpdf.repository.DocScannerRemoteRepository
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -20,6 +24,7 @@ data class ApiHealthUiState(
     val responseTimeMs: Long? = null,
     val health: HealthResponse? = null,
     val capabilities: EngineCapabilitiesResponse? = null,
+    val processState: ProcessDocumentUiState = ProcessDocumentUiState.Idle,
     val errorMessage: String? = null
 ) {
     val isConnected: Boolean
@@ -35,7 +40,8 @@ data class ApiHealthUiState(
 }
 
 class ApiHealthViewModel(
-    private val repository: DocScannerRemoteRepository = DocScannerRemoteRepository()
+    private val repository: DocScannerRemoteRepository = DocScannerRemoteRepository(),
+    private val processDocumentUseCase: ProcessDocumentUseCase = ProcessDocumentUseCase(repository)
 ) : ViewModel() {
     private val _uiState = MutableStateFlow(ApiHealthUiState(isLoading = true))
     val uiState: StateFlow<ApiHealthUiState> = _uiState.asStateFlow()
@@ -72,6 +78,21 @@ class ApiHealthViewModel(
                     errorMessage = error
                 )
             }
+        }
+    }
+
+    fun processImage(
+        context: Context,
+        imageUri: Uri
+    ) {
+        viewModelScope.launch {
+            processDocumentUseCase.processCapturedImage(
+                context = context.applicationContext,
+                imageUri = imageUri,
+                onState = { processState ->
+                    _uiState.update { it.copy(processState = processState) }
+                }
+            )
         }
     }
 

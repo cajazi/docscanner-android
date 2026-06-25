@@ -1,5 +1,7 @@
 package com.dev.docscannerpdf.ui.debug
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -27,6 +29,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -34,6 +37,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.dev.docscannerpdf.process.ProcessDocumentUiState
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -42,6 +46,12 @@ fun ApiHealthScreen(
     viewModel: ApiHealthViewModel = viewModel()
 ) {
     val state by viewModel.uiState.collectAsState()
+    val context = LocalContext.current
+    val imagePicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        if (uri != null) {
+            viewModel.processImage(context, uri)
+        }
+    }
 
     Scaffold(
         topBar = {
@@ -78,6 +88,12 @@ fun ApiHealthScreen(
                 )
             }
             item {
+                ProcessDocumentCard(
+                    processState = state.processState,
+                    onPickImage = { imagePicker.launch("image/*") }
+                )
+            }
+            item {
                 DetailCard(title = "Health") {
                     val health = state.health
                     if (health == null) {
@@ -101,6 +117,43 @@ fun ApiHealthScreen(
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun ProcessDocumentCard(
+    processState: ProcessDocumentUiState,
+    onPickImage: () -> Unit
+) {
+    DetailCard(title = "Process Captured Image") {
+        when (processState) {
+            ProcessDocumentUiState.Idle -> {
+                EmptyValue(text = "No backend process request has been started.")
+            }
+            is ProcessDocumentUiState.Uploading -> {
+                DetailLine("State", "Uploading")
+                DetailLine(
+                    "Progress",
+                    processState.progressFraction?.let { "${(it * 100).toInt()}%" } ?: "Starting"
+                )
+            }
+            ProcessDocumentUiState.CreatingPage -> DetailLine("State", "Creating page")
+            ProcessDocumentUiState.Processing -> DetailLine("State", "Processing")
+            is ProcessDocumentUiState.Success -> {
+                DetailLine("State", "Backend accepted request")
+                DetailLine("Document ID", processState.result.documentId)
+                DetailLine("Page ID", processState.result.pageId)
+                DetailLine("Process Job ID", processState.result.processJobId)
+                DetailLine("Processing started", processState.result.processingStartedAt)
+            }
+            is ProcessDocumentUiState.Error -> {
+                DetailLine("State", "Error")
+                DetailLine("Error message", processState.message)
+            }
+        }
+        Button(onClick = onPickImage) {
+            Text(text = "Pick image")
         }
     }
 }
