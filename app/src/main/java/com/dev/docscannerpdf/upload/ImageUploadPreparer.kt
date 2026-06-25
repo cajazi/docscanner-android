@@ -8,7 +8,7 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.MultipartBody
 
 object ImageUploadPreparer {
-    private const val DEFAULT_FIELD_NAME = "image"
+    private const val DEFAULT_FIELD_NAME = "file"
     private const val DEFAULT_FILE_NAME = "scan.jpg"
     const val DEFAULT_MIME_TYPE = "image/jpeg"
 

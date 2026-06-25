@@ -21,19 +21,19 @@ interface DocScannerApiService {
     @POST("engine/documents")
     suspend fun createDocument(
         @Body request: CreateBackendDocumentRequest
-    ): Response<CreateBackendDocumentResponse>
+    ): Response<BackendDocumentDto>
 
     @Multipart
     @POST("engine/uploads/images")
     suspend fun uploadImage(
         @Part image: MultipartBody.Part
-    ): Response<UploadImageResponse>
+    ): Response<UploadedImageDto>
 
     @POST("engine/documents/{documentId}/pages")
     suspend fun linkUploadedImageToPage(
         @Path("documentId") documentId: String,
         @Body request: LinkUploadedImageToPageRequest
-    ): Response<LinkUploadedImageToPageResponse>
+    ): Response<BackendDocumentPageDto>
 
     @POST("engine/documents/{documentId}/pages/{pageId}/process")
     suspend fun processPage(
@@ -41,6 +41,11 @@ interface DocScannerApiService {
         @Path("pageId") pageId: String,
         @Body request: ProcessPageRequest
     ): Response<ProcessPageResponse>
+
+    @GET("engine/process-jobs/{jobId}")
+    suspend fun getProcessJob(
+        @Path("jobId") jobId: String
+    ): Response<ProcessJobStatus>
 
     @POST("engine/documents/{documentId}/pdf-export-jobs")
     suspend fun createPdfExportJob(
@@ -77,11 +82,6 @@ data class CreateBackendDocumentRequest(
 )
 
 @Serializable
-data class CreateBackendDocumentResponse(
-    val document: BackendDocumentDto
-)
-
-@Serializable
 data class BackendDocumentDto(
     val id: String,
     val title: String,
@@ -94,29 +94,20 @@ data class BackendDocumentDto(
 )
 
 @Serializable
-data class UploadImageResponse(
-    val upload: UploadedImageDto
-)
-
-@Serializable
 data class UploadedImageDto(
     val id: String? = null,
-    val url: String,
+    val storagePath: String,
+    val url: String? = null,
     val fileName: String? = null,
+    val originalFilename: String? = null,
     val mimeType: String? = null,
     val sizeBytes: Long? = null
 )
 
 @Serializable
 data class LinkUploadedImageToPageRequest(
-    val uploadUrl: String,
-    val pageNumber: Int? = null,
-    val mimeType: String? = null
-)
-
-@Serializable
-data class LinkUploadedImageToPageResponse(
-    val page: BackendDocumentPageDto
+    val storagePath: String,
+    val type: String = "ORIGINAL"
 )
 
 @Serializable
@@ -125,6 +116,8 @@ data class BackendDocumentPageDto(
     val documentId: String,
     val pageNumber: Int,
     val originalImageUrl: String? = null,
+    val croppedImageUrl: String? = null,
+    val enhancedImageUrl: String? = null,
     val processingStatus: String? = null,
     val createdAt: String? = null,
     val updatedAt: String? = null
@@ -144,7 +137,59 @@ data class ProcessPageResponse(
     val pipelineId: String? = null,
     val processingStartedAt: String? = null,
     val status: String? = null,
+    val completedStages: List<String> = emptyList(),
+    val failedStages: List<ProcessStageFailure> = emptyList(),
+    val fallbackStages: List<String> = emptyList(),
+    val finalImageRole: String? = null,
+    val searchableReady: Boolean? = null,
+    val errorMessage: String? = null,
+    val updatedAt: String? = null,
     val outputUrl: String? = null
+) {
+    fun toProcessJobStatus(
+        fallbackJobId: String,
+        fallbackUpdatedAt: String
+    ): ProcessJobStatus {
+        return ProcessJobStatus(
+            id = processJobId ?: pipelineId ?: fallbackJobId,
+            status = status ?: if (failedStages.isEmpty()) "COMPLETED" else "FAILED",
+            completedStages = completedStages,
+            failedStages = failedStages,
+            fallbackStages = fallbackStages,
+            finalImageRole = finalImageRole,
+            searchableReady = searchableReady ?: false,
+            errorMessage = errorMessage,
+            updatedAt = updatedAt ?: processingStartedAt ?: fallbackUpdatedAt
+        )
+    }
+}
+
+@Serializable
+data class ProcessJobStatus(
+    val id: String,
+    val status: String,
+    val completedStages: List<String> = emptyList(),
+    val failedStages: List<ProcessStageFailure> = emptyList(),
+    val fallbackStages: List<String> = emptyList(),
+    val finalImageRole: String? = null,
+    val searchableReady: Boolean = false,
+    val errorMessage: String? = null,
+    val updatedAt: String? = null,
+    val enhancedImageUrl: String? = null,
+    val croppedImageUrl: String? = null,
+    val originalImageUrl: String? = null
+) {
+    val isCompleted: Boolean
+        get() = status.equals("COMPLETED", ignoreCase = true)
+
+    val isFailed: Boolean
+        get() = status.equals("FAILED", ignoreCase = true)
+}
+
+@Serializable
+data class ProcessStageFailure(
+    val stage: String,
+    val errorMessage: String? = null
 )
 
 @Serializable

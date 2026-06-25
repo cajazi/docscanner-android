@@ -3,19 +3,17 @@ package com.dev.docscannerpdf.process
 import com.dev.docscannerpdf.network.BackendDocumentDto
 import com.dev.docscannerpdf.network.BackendDocumentPageDto
 import com.dev.docscannerpdf.network.CreateBackendDocumentRequest
-import com.dev.docscannerpdf.network.CreateBackendDocumentResponse
 import com.dev.docscannerpdf.network.CreatePdfExportJobRequest
 import com.dev.docscannerpdf.network.DocScannerApiService
 import com.dev.docscannerpdf.network.EngineCapabilitiesResponse
 import com.dev.docscannerpdf.network.HealthResponse
 import com.dev.docscannerpdf.network.LinkUploadedImageToPageRequest
-import com.dev.docscannerpdf.network.LinkUploadedImageToPageResponse
 import com.dev.docscannerpdf.network.NetworkClient
 import com.dev.docscannerpdf.network.NetworkResult
 import com.dev.docscannerpdf.network.PdfExportJobResponse
+import com.dev.docscannerpdf.network.ProcessJobStatus
 import com.dev.docscannerpdf.network.ProcessPageRequest
 import com.dev.docscannerpdf.network.ProcessPageResponse
-import com.dev.docscannerpdf.network.UploadImageResponse
 import com.dev.docscannerpdf.network.UploadedImageDto
 import com.dev.docscannerpdf.repository.DocScannerRemoteRepository
 import kotlinx.coroutines.runBlocking
@@ -32,24 +30,20 @@ class ProcessWorkflowNetworkTest {
     fun uploadResultParsing_readsNestedUploadResult() {
         val payload = """
             {
-              "upload": {
-                "id": "upload_1",
-                "url": "file:///tmp/scan.jpg",
-                "fileName": "scan.jpg",
-                "mimeType": "image/jpeg",
-                "sizeBytes": 1024,
-                "ignored": true
-              }
+              "storagePath": "file:///tmp/scan.jpg",
+              "originalFilename": "scan.jpg",
+              "mimeType": "image/jpeg",
+              "sizeBytes": 1024,
+              "ignored": true
             }
         """.trimIndent()
 
-        val response = NetworkClient.json.decodeFromString<UploadImageResponse>(payload)
+        val response = NetworkClient.json.decodeFromString<UploadedImageDto>(payload)
 
-        assertEquals("upload_1", response.upload.id)
-        assertEquals("file:///tmp/scan.jpg", response.upload.url)
-        assertEquals("scan.jpg", response.upload.fileName)
-        assertEquals("image/jpeg", response.upload.mimeType)
-        assertEquals(1024L, response.upload.sizeBytes)
+        assertEquals("file:///tmp/scan.jpg", response.storagePath)
+        assertEquals("scan.jpg", response.originalFilename)
+        assertEquals("image/jpeg", response.mimeType)
+        assertEquals(1024L, response.sizeBytes)
     }
 
     @Test
@@ -101,7 +95,7 @@ class ProcessWorkflowNetworkTest {
 
         val result = repository.linkUploadedImageToPage(
             documentId = "doc_1",
-            request = LinkUploadedImageToPageRequest(uploadUrl = "")
+            request = LinkUploadedImageToPageRequest(storagePath = "")
         )
 
         assertTrue(result is NetworkResult.Error)
@@ -125,20 +119,70 @@ class ProcessWorkflowNetworkTest {
         assertTrue(result is NetworkResult.Exception)
         assertEquals(throwable, (result as NetworkResult.Exception).throwable)
     }
+
+    @Test
+    fun resolveProcessedImageResult_completedJobWithImageUrlMapsToSuccessWithImage() {
+        val repository = DocScannerRemoteRepository(apiService = FakeProcessApiService())
+
+        val result = repository.resolveProcessedImageResult(
+            ProcessJobStatus(
+                id = "pipeline_1",
+                status = "COMPLETED",
+                finalImageRole = "ENHANCED",
+                enhancedImageUrl = "file:///tmp/enhanced.jpg"
+            )
+        )
+
+        assertTrue(result is ProcessedImageResult.SuccessWithImage)
+        assertEquals("file:///tmp/enhanced.jpg", (result as ProcessedImageResult.SuccessWithImage).url)
+    }
+
+    @Test
+    fun resolveProcessedImageResult_completedJobWithoutImageUrlMapsToSuccessWithoutImage() {
+        val repository = DocScannerRemoteRepository(apiService = FakeProcessApiService())
+
+        val result = repository.resolveProcessedImageResult(
+            ProcessJobStatus(
+                id = "pipeline_1",
+                status = "COMPLETED",
+                finalImageRole = "ENHANCED"
+            )
+        )
+
+        assertTrue(result is ProcessedImageResult.SuccessWithoutImage)
+        assertEquals(
+            "Processing completed, but no enhanced image URL is exposed by backend yet.",
+            (result as ProcessedImageResult.SuccessWithoutImage).reason
+        )
+    }
+
+    @Test
+    fun resolveProcessedImageResult_failedJobRemainsError() {
+        val repository = DocScannerRemoteRepository(apiService = FakeProcessApiService())
+
+        val result = repository.resolveProcessedImageResult(
+            ProcessJobStatus(
+                id = "pipeline_1",
+                status = "FAILED",
+                errorMessage = "Enhancement failed"
+            )
+        )
+
+        assertTrue(result is ProcessedImageResult.Error)
+        assertEquals("Enhancement failed", (result as ProcessedImageResult.Error).message)
+    }
 }
 
 private class FakeProcessApiService(
-    private val uploadResponse: Response<UploadImageResponse> = Response.success(
-        UploadImageResponse(UploadedImageDto(url = "file:///tmp/scan.jpg", mimeType = "image/jpeg"))
+    private val uploadResponse: Response<UploadedImageDto> = Response.success(
+        UploadedImageDto(storagePath = "file:///tmp/scan.jpg", mimeType = "image/jpeg")
     ),
-    private val pageResponse: Response<LinkUploadedImageToPageResponse> = Response.success(
-        LinkUploadedImageToPageResponse(
-            BackendDocumentPageDto(
-                id = "page_1",
-                documentId = "doc_1",
-                pageNumber = 1,
-                originalImageUrl = "file:///tmp/scan.jpg"
-            )
+    private val pageResponse: Response<BackendDocumentPageDto> = Response.success(
+        BackendDocumentPageDto(
+            id = "page_1",
+            documentId = "doc_1",
+            pageNumber = 1,
+            originalImageUrl = "file:///tmp/scan.jpg"
         )
     ),
     private val processThrowable: Throwable? = null
@@ -153,28 +197,26 @@ private class FakeProcessApiService(
 
     override suspend fun createDocument(
         request: CreateBackendDocumentRequest
-    ): Response<CreateBackendDocumentResponse> {
+    ): Response<BackendDocumentDto> {
         return Response.success(
-            CreateBackendDocumentResponse(
-                BackendDocumentDto(
-                    id = "doc_1",
-                    title = request.title,
-                    sourceType = request.sourceType
-                )
+            BackendDocumentDto(
+                id = "doc_1",
+                title = request.title,
+                sourceType = request.sourceType
             )
         )
     }
 
     override suspend fun uploadImage(
         image: MultipartBody.Part
-    ): Response<UploadImageResponse> {
+    ): Response<UploadedImageDto> {
         return uploadResponse
     }
 
     override suspend fun linkUploadedImageToPage(
         documentId: String,
         request: LinkUploadedImageToPageRequest
-    ): Response<LinkUploadedImageToPageResponse> {
+    ): Response<BackendDocumentPageDto> {
         return pageResponse
     }
 
@@ -190,6 +232,19 @@ private class FakeProcessApiService(
                 pageId = pageId,
                 pipelineId = "pipeline_1",
                 processingStartedAt = "2026-06-25T12:00:00.000Z"
+            )
+        )
+    }
+
+    override suspend fun getProcessJob(jobId: String): Response<ProcessJobStatus> {
+        return Response.success(
+            ProcessJobStatus(
+                id = jobId,
+                status = "COMPLETED",
+                completedStages = listOf("ENHANCEMENT"),
+                finalImageRole = "ENHANCED",
+                searchableReady = true,
+                updatedAt = "2026-06-25T12:00:01.000Z"
             )
         )
     }

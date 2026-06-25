@@ -3,6 +3,7 @@ package com.dev.docscannerpdf.ui.debug
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
@@ -37,7 +38,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import coil.compose.AsyncImage
+import com.dev.docscannerpdf.network.ProcessJobStatus
 import com.dev.docscannerpdf.process.ProcessDocumentUiState
+import com.dev.docscannerpdf.process.ProcessedImageResult
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -140,20 +144,80 @@ private fun ProcessDocumentCard(
             }
             ProcessDocumentUiState.CreatingPage -> DetailLine("State", "Creating page")
             ProcessDocumentUiState.Processing -> DetailLine("State", "Processing")
+            is ProcessDocumentUiState.Polling -> {
+                DetailLine("State", "Polling (${processState.attempt}/${processState.maxAttempts})")
+                ProcessJobStatusLines(processState.latestStatus)
+            }
+            is ProcessDocumentUiState.ProcessingCompletedNoImageUrl -> {
+                DetailLine("State", "Processing completed")
+                DetailLine("Image result", processState.reason)
+            }
             is ProcessDocumentUiState.Success -> {
                 DetailLine("State", "Backend accepted request")
                 DetailLine("Document ID", processState.result.documentId)
                 DetailLine("Page ID", processState.result.pageId)
                 DetailLine("Process Job ID", processState.result.processJobId)
                 DetailLine("Processing started", processState.result.processingStartedAt)
+                processState.result.latestJobStatus?.let { latestStatus ->
+                    ProcessJobStatusLines(latestStatus)
+                }
+                ProcessedImageResultView(processState.result.imageResult)
             }
             is ProcessDocumentUiState.Error -> {
                 DetailLine("State", "Error")
                 DetailLine("Error message", processState.message)
             }
+            is ProcessDocumentUiState.Timeout -> {
+                DetailLine("State", "Timeout")
+                DetailLine("Process Job ID", processState.processJobId)
+                DetailLine("Error message", processState.message)
+                processState.latestStatus?.let { latestStatus ->
+                    ProcessJobStatusLines(latestStatus)
+                }
+            }
         }
         Button(onClick = onPickImage) {
             Text(text = "Pick image")
+        }
+    }
+}
+
+@Composable
+private fun ProcessJobStatusLines(status: ProcessJobStatus) {
+    DetailLine("Latest job status", status.status)
+    DetailLine("Completed stages", status.completedStages.joinToString().ifBlank { "None" })
+    DetailLine(
+        "Failed stages",
+        status.failedStages.joinToString { failure ->
+            listOfNotNull(failure.stage, failure.errorMessage).joinToString(": ")
+        }.ifBlank { "None" }
+    )
+    DetailLine("Fallback stages", status.fallbackStages.joinToString().ifBlank { "None" })
+    DetailLine("Final image role", status.finalImageRole ?: "Not available")
+    DetailLine("Searchable ready", status.searchableReady.toString())
+    status.errorMessage?.takeIf { it.isNotBlank() }?.let { error ->
+        DetailLine("Job error", error)
+    }
+}
+
+@Composable
+private fun ProcessedImageResultView(result: ProcessedImageResult) {
+    when (result) {
+        is ProcessedImageResult.SuccessWithImage -> {
+            DetailLine("Image result", result.url)
+            AsyncImage(
+                model = result.url,
+                contentDescription = "Processed image result",
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .aspectRatio(0.72f)
+            )
+        }
+        is ProcessedImageResult.SuccessWithoutImage -> {
+            DetailLine("Image result", result.reason)
+        }
+        is ProcessedImageResult.Error -> {
+            DetailLine("Image result", result.message)
         }
     }
 }

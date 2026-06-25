@@ -50,7 +50,7 @@ class ImageUploadPreparerTest {
         part.body.writeTo(buffer)
 
         assertNotNull(part.headers)
-        assertTrue(part.headers.toString().contains("name=\"image\""))
+        assertTrue(part.headers.toString().contains("name=\"file\""))
         assertTrue(part.headers.toString().contains("filename=\"${file.name}\""))
         assertEquals("image/jpeg", part.body.contentType().toString())
         assertEquals(4L, part.body.contentLength())

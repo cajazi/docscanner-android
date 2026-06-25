@@ -2,22 +2,24 @@ package com.dev.docscannerpdf.repository
 
 import android.content.Context
 import android.net.Uri
+import com.dev.docscannerpdf.network.BackendDocumentDto
+import com.dev.docscannerpdf.network.BackendDocumentPageDto
 import com.dev.docscannerpdf.network.CreateBackendDocumentRequest
-import com.dev.docscannerpdf.network.CreateBackendDocumentResponse
 import com.dev.docscannerpdf.network.CreatePdfExportJobRequest
 import com.dev.docscannerpdf.network.DocScannerApiService
 import com.dev.docscannerpdf.network.EngineCapabilitiesResponse
 import com.dev.docscannerpdf.network.HealthResponse
 import com.dev.docscannerpdf.network.LinkUploadedImageToPageRequest
-import com.dev.docscannerpdf.network.LinkUploadedImageToPageResponse
 import com.dev.docscannerpdf.network.NetworkClient
 import com.dev.docscannerpdf.network.NetworkResult
 import com.dev.docscannerpdf.network.PdfExportJobResponse
+import com.dev.docscannerpdf.network.ProcessJobStatus
 import com.dev.docscannerpdf.network.ProcessPageRequest
 import com.dev.docscannerpdf.network.ProcessPageResponse
-import com.dev.docscannerpdf.network.UploadImageResponse
+import com.dev.docscannerpdf.network.UploadedImageDto
 import com.dev.docscannerpdf.network.safeApiCall
 import com.dev.docscannerpdf.process.ProcessDocumentResult
+import com.dev.docscannerpdf.process.ProcessedImageResult
 import com.dev.docscannerpdf.upload.ImageUploadPreparer
 import com.dev.docscannerpdf.upload.UploadProgressListener
 import java.text.SimpleDateFormat
@@ -39,20 +41,20 @@ class DocScannerRemoteRepository(
 
     suspend fun createDocument(
         request: CreateBackendDocumentRequest
-    ): NetworkResult<CreateBackendDocumentResponse> {
+    ): NetworkResult<BackendDocumentDto> {
         return safeApiCall { apiService.createDocument(request) }
     }
 
     suspend fun uploadImage(
         image: MultipartBody.Part
-    ): NetworkResult<UploadImageResponse> {
+    ): NetworkResult<UploadedImageDto> {
         return safeApiCall { apiService.uploadImage(image) }
     }
 
     suspend fun linkUploadedImageToPage(
         documentId: String,
         request: LinkUploadedImageToPageRequest
-    ): NetworkResult<LinkUploadedImageToPageResponse> {
+    ): NetworkResult<BackendDocumentPageDto> {
         return safeApiCall {
             apiService.linkUploadedImageToPage(
                 documentId = documentId,
@@ -69,7 +71,7 @@ class DocScannerRemoteRepository(
     ): NetworkResult<ProcessDocumentResult> {
         val documentResult = createDocument(CreateBackendDocumentRequest(title = title))
         val document = when (documentResult) {
-            is NetworkResult.Success -> documentResult.data.document
+            is NetworkResult.Success -> documentResult.data
             is NetworkResult.Error -> return documentResult
             is NetworkResult.Exception -> return documentResult
         }
@@ -81,7 +83,7 @@ class DocScannerRemoteRepository(
         )
         val uploadResult = uploadImage(uploadPart)
         val upload = when (uploadResult) {
-            is NetworkResult.Success -> uploadResult.data.upload
+            is NetworkResult.Success -> uploadResult.data
             is NetworkResult.Error -> return uploadResult
             is NetworkResult.Exception -> return uploadResult
         }
@@ -89,13 +91,11 @@ class DocScannerRemoteRepository(
         val pageResult = linkUploadedImageToPage(
             documentId = document.id,
             request = LinkUploadedImageToPageRequest(
-                uploadUrl = upload.url,
-                pageNumber = 1,
-                mimeType = upload.mimeType
+                storagePath = upload.storagePath
             )
         )
         val page = when (pageResult) {
-            is NetworkResult.Success -> pageResult.data.page
+            is NetworkResult.Success -> pageResult.data
             is NetworkResult.Error -> return pageResult
             is NetworkResult.Exception -> return pageResult
         }
@@ -117,7 +117,11 @@ class DocScannerRemoteRepository(
                 documentId = document.id,
                 pageId = page.id,
                 processJobId = process.processJobId ?: process.pipelineId ?: process.outputUrl ?: process.status ?: "accepted",
-                processingStartedAt = process.processingStartedAt ?: processingStartedAt
+                processingStartedAt = process.processingStartedAt ?: processingStartedAt,
+                latestJobStatus = process.toProcessJobStatus(
+                    fallbackJobId = process.processJobId ?: process.pipelineId ?: "accepted",
+                    fallbackUpdatedAt = processingStartedAt
+                )
             )
         )
     }
@@ -132,6 +136,31 @@ class DocScannerRemoteRepository(
                 documentId = documentId,
                 pageId = pageId,
                 request = request
+            )
+        }
+    }
+
+    suspend fun pollProcessJob(jobId: String): NetworkResult<ProcessJobStatus> {
+        return safeApiCall { apiService.getProcessJob(jobId) }
+    }
+
+    fun resolveProcessedImageResult(status: ProcessJobStatus): ProcessedImageResult {
+        if (status.isFailed) {
+            return ProcessedImageResult.Error(status.errorMessage ?: "Backend processing failed.")
+        }
+
+        val imageUrl = when (status.finalImageRole?.uppercase(Locale.US)) {
+            "ENHANCED" -> status.enhancedImageUrl
+            "CROPPED" -> status.croppedImageUrl
+            "ORIGINAL" -> status.originalImageUrl
+            else -> status.enhancedImageUrl ?: status.croppedImageUrl
+        }
+
+        return if (status.isCompleted && !imageUrl.isNullOrBlank()) {
+            ProcessedImageResult.SuccessWithImage(imageUrl)
+        } else {
+            ProcessedImageResult.SuccessWithoutImage(
+                "Processing completed, but no enhanced image URL is exposed by backend yet."
             )
         }
     }
