@@ -86,7 +86,7 @@ class ApiHealthViewModel(
         imageUri: Uri
     ) {
         viewModelScope.launch {
-            processDocumentUseCase.processCapturedImage(
+            processDocumentUseCase.processCapturedImageAndPoll(
                 context = context.applicationContext,
                 imageUri = imageUri,
                 onState = { processState ->
