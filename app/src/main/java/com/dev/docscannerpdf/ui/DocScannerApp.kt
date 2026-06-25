@@ -16,6 +16,7 @@ import com.dev.docscannerpdf.data.local.APP_DATABASE_VERSION
 import com.dev.docscannerpdf.domain.backup.BackupRepository
 import com.dev.docscannerpdf.navigation.canHandleSystemBack
 import com.dev.docscannerpdf.navigation.handleSystemBack
+import com.dev.docscannerpdf.ui.debug.ApiHealthScreen
 import com.dev.docscannerpdf.ui.theme.DocScannerPDFTheme
 import com.dev.docscannerpdf.util.AppConstants
 import com.google.mlkit.vision.documentscanner.GmsDocumentScannerOptions
@@ -77,6 +78,10 @@ internal fun DocScannerApp(host: MainActivity) {
                         biometricsAvailable = host.canUseBiometrics(),
                         dangerousPermissionsDeclared = host.hasDangerousPermissionsDeclared(),
                         onBack = { host.showFeatureValidation = false }
+                    )
+                } else if (host.showApiHealth) {
+                    ApiHealthScreen(
+                        onBack = { host.showApiHealth = false }
                     )
                 } else if (host.showBackupRestore) {
                     BackupRestoreScreen(
@@ -141,7 +146,8 @@ internal fun DocScannerApp(host: MainActivity) {
                         onViewOnboardingAgain = host::viewOnboardingAgain,
                         onOpenBackupRestore = { host.showBackupRestore = true },
                         onOpenCloudSync = { host.showCloudSync = true },
-                        onOpenFeatureValidation = { host.showFeatureValidation = true }
+                        onOpenFeatureValidation = { host.showFeatureValidation = true },
+                        onOpenApiHealth = { host.showApiHealth = true }
                     )
                 } else if (viewerDocument != null) {
                     PdfViewerScreen(

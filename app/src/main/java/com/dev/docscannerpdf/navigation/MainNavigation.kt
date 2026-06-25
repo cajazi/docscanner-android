@@ -25,6 +25,7 @@ internal fun MainActivity.currentScreen(): MainScreen {
         showCloudSync -> MainScreen.CloudSync
         showPremium -> MainScreen.Premium
         showFeatureValidation -> MainScreen.FeatureValidation
+        showApiHealth -> MainScreen.ApiHealth
         showBackupRestore -> MainScreen.BackupRestore
         showAppLockSettings -> MainScreen.Settings
         pdfViewerDocument != null -> MainScreen.PdfViewer
@@ -63,6 +64,7 @@ internal fun MainActivity.handleSystemBack() {
         showCloudSync -> showCloudSync = false
         showPremium -> showPremium = false
         showFeatureValidation -> showFeatureValidation = false
+        showApiHealth -> showApiHealth = false
         showBackupRestore -> showBackupRestore = false
         showAppLockSettings -> showAppLockSettings = false
         showLockPdf -> closeLockPdf()
