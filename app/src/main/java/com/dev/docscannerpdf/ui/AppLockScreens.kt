@@ -144,7 +144,8 @@ fun AppLockSettingsScreen(
     onViewOnboardingAgain: () -> Unit,
     onOpenBackupRestore: () -> Unit,
     onOpenCloudSync: () -> Unit,
-    onOpenFeatureValidation: () -> Unit
+    onOpenFeatureValidation: () -> Unit,
+    onOpenApiHealth: () -> Unit
 ) {
     var showCreatePin by remember { mutableStateOf(false) }
     var showChangePin by remember { mutableStateOf(false) }
@@ -211,6 +212,12 @@ fun AppLockSettingsScreen(
                     title = "Feature Validation Center",
                     subtitle = "Run passive developer checks for app features and release safety.",
                     onClick = onOpenFeatureValidation
+                )
+                SettingsRow(
+                    icon = Icons.Default.CloudSync,
+                    title = "API Status",
+                    subtitle = "Verify Android can reach the DocScanner backend.",
+                    onClick = onOpenApiHealth
                 )
             }
             LockSettingsHeader(

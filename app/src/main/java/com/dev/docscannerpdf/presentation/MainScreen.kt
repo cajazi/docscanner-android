@@ -7,6 +7,7 @@ enum class MainScreen {
     CloudSync,
     Premium,
     FeatureValidation,
+    ApiHealth,
     BackupRestore,
     Settings,
     PdfViewer,

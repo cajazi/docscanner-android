@@ -196,6 +196,7 @@ class MainActivity : FragmentActivity() {
     internal var selectedIdCardCategory by mutableStateOf("ID Card")
     internal var idCardValidationMessage by mutableStateOf<String?>(null)
     internal var showFeatureValidation by mutableStateOf(false)
+    internal var showApiHealth by mutableStateOf(false)
     internal var showPremium by mutableStateOf(false)
     internal var showOnboarding by mutableStateOf(false)
     internal var backupProcessing by mutableStateOf(false)
