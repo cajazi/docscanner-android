@@ -3,6 +3,7 @@ package com.dev.docscannerpdf.ui
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
+import coil.compose.AsyncImage
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -41,8 +42,10 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Apps
 import androidx.compose.material.icons.filled.BorderColor
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.CloudUpload
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.TextFields
 import androidx.compose.material.icons.filled.Image as ImageIcon
@@ -53,6 +56,7 @@ import androidx.compose.material3.CheckboxDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
@@ -86,6 +90,8 @@ import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.runtime.mutableStateListOf
+import com.dev.docscannerpdf.process.ScannerBackendProcessingState
+import com.dev.docscannerpdf.process.isActive
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -472,6 +478,9 @@ fun ImportedImageDocumentPreview(
     imageUri: Uri,
     title: String,
     rotationDegrees: Float,
+    backendProcessingState: ScannerBackendProcessingState = ScannerBackendProcessingState.Idle,
+    onProcessWithBackend: () -> Unit = {},
+    onRetryBackendProcessing: () -> Unit = {},
     onBack: () -> Unit,
     onAdd: () -> Unit,
     onEdit: () -> Unit,
@@ -637,6 +646,12 @@ fun ImportedImageDocumentPreview(
 
             PreviewFilterStrip()
 
+            ScannerBackendProcessingPanel(
+                state = backendProcessingState,
+                onProcessWithBackend = onProcessWithBackend,
+                onRetry = onRetryBackendProcessing
+            )
+
             Surface(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -654,6 +669,177 @@ fun ImportedImageDocumentPreview(
             }
         }
     }
+}
+
+@Composable
+private fun ScannerBackendProcessingPanel(
+    state: ScannerBackendProcessingState,
+    onProcessWithBackend: () -> Unit,
+    onRetry: () -> Unit
+) {
+    val active = state.isActive
+    val statusText = when (state) {
+        ScannerBackendProcessingState.Idle -> "Ready for backend processing"
+        is ScannerBackendProcessingState.Uploading -> "Uploading"
+        ScannerBackendProcessingState.Processing -> "Processing"
+        is ScannerBackendProcessingState.Polling -> "Polling ${state.attempt}/${state.maxAttempts}: ${state.latestStatus.status}"
+        is ScannerBackendProcessingState.CompletedWithImage -> "Backend accepted request"
+        is ScannerBackendProcessingState.CompletedWithoutImage -> state.reason
+        is ScannerBackendProcessingState.Error -> state.message
+    }
+    val accentColor = when (state) {
+        is ScannerBackendProcessingState.CompletedWithImage -> Color(0xFF16C89A)
+        is ScannerBackendProcessingState.CompletedWithoutImage -> Color(0xFFF6C85F)
+        is ScannerBackendProcessingState.Error -> Color(0xFFFF6B6B)
+        else -> Color(0xFF35D5B4)
+    }
+
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 8.dp),
+        shape = RoundedCornerShape(8.dp),
+        color = Color(0xFF202124),
+        border = androidx.compose.foundation.BorderStroke(1.dp, accentColor.copy(alpha = 0.45f))
+    ) {
+        Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(3.dp)
+                ) {
+                    Text(
+                        text = "Backend Processing",
+                        style = MaterialTheme.typography.titleSmall,
+                        color = Color.White,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Text(
+                        text = statusText,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color(0xFFD6D9DE),
+                        maxLines = 3,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                Spacer(modifier = Modifier.width(10.dp))
+                Button(
+                    enabled = !active,
+                    onClick = if (state is ScannerBackendProcessingState.Error) onRetry else onProcessWithBackend,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = accentColor,
+                        disabledContainerColor = Color(0xFF4B4D53)
+                    ),
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
+                ) {
+                    Icon(
+                        imageVector = if (state is ScannerBackendProcessingState.Error) {
+                            Icons.Default.Refresh
+                        } else {
+                            Icons.Default.CloudUpload
+                        },
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                        tint = Color.White
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = if (state is ScannerBackendProcessingState.Error) "Retry" else "Process with Backend",
+                        color = Color.White,
+                        style = MaterialTheme.typography.labelLarge,
+                        maxLines = 1
+                    )
+                }
+            }
+
+            when (state) {
+                is ScannerBackendProcessingState.Uploading -> {
+                    if (state.progressFraction != null) {
+                        LinearProgressIndicator(
+                            progress = { state.progressFraction.coerceIn(0f, 1f) },
+                            modifier = Modifier.fillMaxWidth(),
+                            color = accentColor,
+                            trackColor = Color(0xFF3A3C42)
+                        )
+                    } else {
+                        LinearProgressIndicator(
+                            modifier = Modifier.fillMaxWidth(),
+                            color = accentColor,
+                            trackColor = Color(0xFF3A3C42)
+                        )
+                    }
+                }
+                ScannerBackendProcessingState.Processing,
+                is ScannerBackendProcessingState.Polling -> {
+                    LinearProgressIndicator(
+                        modifier = Modifier.fillMaxWidth(),
+                        color = accentColor,
+                        trackColor = Color(0xFF3A3C42)
+                    )
+                }
+                is ScannerBackendProcessingState.CompletedWithImage -> {
+                    BackendResultIds(
+                        documentId = state.documentId,
+                        pageId = state.pageId,
+                        processJobId = state.processJobId
+                    )
+                    AsyncImage(
+                        model = state.url,
+                        contentDescription = "Processed backend image",
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(160.dp)
+                            .clip(RoundedCornerShape(6.dp))
+                            .background(Color.Black),
+                        contentScale = ContentScale.Fit
+                    )
+                }
+                is ScannerBackendProcessingState.CompletedWithoutImage -> {
+                    BackendResultIds(
+                        documentId = state.documentId,
+                        pageId = state.pageId,
+                        processJobId = state.processJobId
+                    )
+                }
+                ScannerBackendProcessingState.Idle,
+                is ScannerBackendProcessingState.Error -> Unit
+            }
+        }
+    }
+}
+
+@Composable
+private fun BackendResultIds(
+    documentId: String?,
+    pageId: String?,
+    processJobId: String?
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+        documentId?.let { BackendResultLine(label = "Document ID", value = it) }
+        pageId?.let { BackendResultLine(label = "Page ID", value = it) }
+        processJobId?.let { BackendResultLine(label = "Process Job ID", value = it) }
+    }
+}
+
+@Composable
+private fun BackendResultLine(
+    label: String,
+    value: String
+) {
+    Text(
+        text = "$label: $value",
+        style = MaterialTheme.typography.labelSmall,
+        color = Color(0xFFB8BDC4),
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis
+    )
 }
 
 @Composable
