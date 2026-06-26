@@ -58,6 +58,7 @@ import com.dev.docscannerpdf.domain.security.AppLockSettings
 import com.dev.docscannerpdf.domain.pdf.PdfRenderHelper
 import com.dev.docscannerpdf.navigation.canHandleSystemBack
 import com.dev.docscannerpdf.navigation.handleSystemBack
+import com.dev.docscannerpdf.network.NetworkResult
 import com.dev.docscannerpdf.presentation.EditedPdfOutput
 import com.dev.docscannerpdf.presentation.MergeOutput
 import com.dev.docscannerpdf.presentation.PdfImageOutput
@@ -70,6 +71,9 @@ import com.dev.docscannerpdf.presentation.SignedPdfOutput
 import com.dev.docscannerpdf.presentation.SplitOutput
 import com.dev.docscannerpdf.presentation.WatermarkOutput
 import com.dev.docscannerpdf.presentation.WatermarkPreview
+import com.dev.docscannerpdf.process.ProcessDocumentUseCase
+import com.dev.docscannerpdf.process.ScannerBackendProcessingState
+import com.dev.docscannerpdf.process.toScannerBackendProcessingState
 import com.dev.docscannerpdf.ui.DocScannerApp
 import com.dev.docscannerpdf.util.AppConstants
 import com.dev.docscannerpdf.ui.APP_PIN_LENGTH
@@ -144,9 +148,13 @@ class MainActivity : FragmentActivity() {
     }
     private var pendingScanTitlePrefix = DEFAULT_SCAN_TITLE_PREFIX
     private var pendingScanIsIdCardScan = false
+    private val processDocumentUseCase = ProcessDocumentUseCase()
     internal var imageImportReview by mutableStateOf<PendingImageReview?>(null)
     internal var pendingImageImport by mutableStateOf<PendingImageImport?>(null)
     internal var importedImagePreview by mutableStateOf<PendingImageImport?>(null)
+    internal var scannerBackendProcessingState by mutableStateOf<ScannerBackendProcessingState>(
+        ScannerBackendProcessingState.Idle
+    )
     internal var imageEditorMessage by mutableStateOf<String?>(null)
     internal var showSignaturePad by mutableStateOf(false)
     internal var signatureTargetUri by mutableStateOf<Uri?>(null)
@@ -215,6 +223,7 @@ class MainActivity : FragmentActivity() {
                 imageImportReview = null
                 pendingImageImport = null
                 imageEditorMessage = null
+                scannerBackendProcessingState = ScannerBackendProcessingState.Idle
                 importedImagePreview = PendingImageImport(
                     imageUri = previewPageUri,
                     title = "$pendingScanTitlePrefix ${SimpleDateFormat("dd-MM-yyyy HH.mm", Locale.getDefault()).format(Date())}"
@@ -749,6 +758,7 @@ class MainActivity : FragmentActivity() {
         imageImportReview = PendingImageReview(imageUris = uris)
         pendingImageImport = null
         importedImagePreview = null
+        scannerBackendProcessingState = ScannerBackendProcessingState.Idle
         imageEditorMessage = null
     }
 
@@ -798,7 +808,48 @@ class MainActivity : FragmentActivity() {
                 extractedText = finalState.extractedText
             )
             pendingImageImport = null
+            scannerBackendProcessingState = ScannerBackendProcessingState.Idle
             importedImagePreview = finalState
+        }
+    }
+
+    internal fun processImportedPreviewWithBackend() {
+        val preview = importedImagePreview
+        if (preview == null) {
+            scannerBackendProcessingState = ScannerBackendProcessingState.Error(
+                "No scanned image is available for backend processing."
+            )
+            return
+        }
+
+        lifecycleScope.launch {
+            scannerBackendProcessingState = ScannerBackendProcessingState.Uploading()
+            when (
+                val result = processDocumentUseCase.processCapturedImageAndPoll(
+                    context = this@MainActivity,
+                    imageUri = preview.imageUri,
+                    title = preview.title,
+                    onState = { state ->
+                        scannerBackendProcessingState = state.toScannerBackendProcessingState()
+                    }
+                )
+            ) {
+                is NetworkResult.Success -> {
+                    if (scannerBackendProcessingState !is ScannerBackendProcessingState.Error) {
+                        scannerBackendProcessingState = result.data.toScannerBackendProcessingState()
+                    }
+                }
+                is NetworkResult.Error -> {
+                    scannerBackendProcessingState = ScannerBackendProcessingState.Error(
+                        result.errorBody?.takeIf { it.isNotBlank() } ?: "Backend processing failed: ${result.code} ${result.message}"
+                    )
+                }
+                is NetworkResult.Exception -> {
+                    scannerBackendProcessingState = ScannerBackendProcessingState.Error(
+                        result.throwable.message ?: "Backend processing failed."
+                    )
+                }
+            }
         }
     }
 

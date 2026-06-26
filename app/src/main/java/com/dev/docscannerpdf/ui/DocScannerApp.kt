@@ -520,6 +520,9 @@ internal fun DocScannerApp(host: MainActivity) {
                         imageUri = previewState.imageUri,
                         title = previewState.title,
                         rotationDegrees = previewState.rotationDegrees,
+                        backendProcessingState = host.scannerBackendProcessingState,
+                        onProcessWithBackend = host::processImportedPreviewWithBackend,
+                        onRetryBackendProcessing = host::processImportedPreviewWithBackend,
                         onBack = { host.importedImagePreview = null },
                         onAdd = { host.imageImportLauncher.launch("image/*") },
                         onEdit = {
