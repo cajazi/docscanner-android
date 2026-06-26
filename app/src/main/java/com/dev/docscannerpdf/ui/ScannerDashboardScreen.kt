@@ -180,6 +180,7 @@ fun ScannerDashboardScreen(
     onShareExtractedText: (DocumentEntity) -> Unit,
     onShareCleanedText: (String, String) -> Unit,
     onExportCleanedText: (String, String, String) -> Unit,
+    onSaveOcrText: (DocumentEntity, String) -> Unit,
     onRenameDocument: (DocumentEntity, String) -> Unit,
     onDeleteDocument: (DocumentEntity) -> Unit
 ) {
@@ -574,6 +575,7 @@ fun ScannerDashboardScreen(
             onShareExtractedText = onShareExtractedText,
             onShareCleanedText = onShareCleanedText,
             onExportCleanedText = onExportCleanedText,
+            onSaveOcrText = onSaveOcrText,
             onComingSoon = { viewModel.showError(it) }
         )
     }
@@ -876,6 +878,7 @@ fun ScannerDashboardScreen(
             onShareText = onShareExtractedText,
             onShareCleanedText = onShareCleanedText,
             onExportCleanedText = onExportCleanedText,
+            onSaveText = onSaveOcrText,
             onValidationError = viewModel::showError
         )
     }
@@ -903,6 +906,7 @@ fun ScannerDashboardScreen(
             onShareText = onShareExtractedText,
             onShareCleanedText = onShareCleanedText,
             onExportCleanedText = onExportCleanedText,
+            onSaveText = onSaveOcrText,
             onValidationError = viewModel::showError
         )
     }
@@ -4115,8 +4119,6 @@ private fun formatTrashDate(timestamp: Long?): String {
 private fun formatPageCount(pageCount: Int): String {
     return if (pageCount == 1) "1 page" else "$pageCount pages"
 }
-
-
 
 
 
