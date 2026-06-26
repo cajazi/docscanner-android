@@ -746,6 +746,21 @@ class ScannerViewModel(
         }
     }
 
+    fun updateDocumentOcrText(document: DocumentEntity, text: String) {
+        viewModelScope.launch {
+            try {
+                repository.updateExtractedText(document.id, text.trim().ifBlank { null })
+                _uiState.update {
+                    it.copy(errorMessage = "OCR text saved.")
+                }
+            } catch (throwable: Throwable) {
+                _uiState.update {
+                    it.copy(errorMessage = throwable.message ?: "Unable to save OCR text.")
+                }
+            }
+        }
+    }
+
     fun addTagsToDocuments(documents: List<DocumentEntity>, tagNames: List<String>) {
         viewModelScope.launch {
             try {

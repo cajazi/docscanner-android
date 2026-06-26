@@ -397,6 +397,7 @@ internal fun DocScannerApp(host: MainActivity) {
                         onShareExtractedText = host::shareExtractedText,
                         onShareCleanedText = host::shareCleanedText,
                         onExportCleanedText = host::exportCleanedText,
+                        onSaveOcrText = host.viewModel::updateDocumentOcrText,
                         onComingSoon = { message -> host.pdfToolsMessage = message }
                     )
                     host.pdfToolsMessage?.let { message ->
@@ -628,6 +629,7 @@ internal fun DocScannerApp(host: MainActivity) {
                         onShareExtractedText = host::shareExtractedText,
                         onShareCleanedText = host::shareCleanedText,
                         onExportCleanedText = host::exportCleanedText,
+                        onSaveOcrText = host.viewModel::updateDocumentOcrText,
                         onRenameDocument = host.viewModel::renameDocument,
                         onDeleteDocument = host::deleteDocument
                     )

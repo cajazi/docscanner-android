@@ -40,6 +40,11 @@ class DocumentRepository(private val dao: DocumentDao) {
 
     suspend fun updateDocument(document: DocumentEntity) = dao.update(document.withSearchableText())
 
+    suspend fun updateExtractedText(id: Long, extractedText: String?) {
+        val document = dao.getById(id) ?: return
+        dao.update(document.copy(extractedText = extractedText?.takeIf { it.isNotBlank() }).withSearchableText())
+    }
+
     suspend fun updateTitle(id: Long, title: String) {
         val document = dao.getById(id) ?: return
         dao.update(document.copy(title = title).withSearchableText())

@@ -11,11 +11,15 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Save
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -42,6 +46,7 @@ fun ExtractTextDialog(
     onShareText: (DocumentEntity) -> Unit,
     onShareCleanedText: (String, String) -> Unit,
     onExportCleanedText: (String, String, String) -> Unit,
+    onSaveText: (DocumentEntity, String) -> Unit = { _, _ -> },
     onValidationError: (String) -> Unit
 ) {
     val clipboardManager = LocalClipboardManager.current
@@ -49,10 +54,14 @@ fun ExtractTextDialog(
     var selectedDocument by remember(documents, initialDocument) {
         mutableStateOf(initialDocument ?: documents.firstOrNull())
     }
-    val text = selectedDocument?.extractedText.orEmpty()
-    val cleanedText = remember(text) { cleanOcrText(text) }
-    val visibleText = if (selectedTab == TextTab.Original) text else cleanedText
-    val hasText = text.isNotBlank()
+    val selectedDocumentId = selectedDocument?.id
+    var editableText by remember(selectedDocumentId) {
+        mutableStateOf(selectedDocument?.extractedText.orEmpty())
+    }
+    val cleanedText = remember(editableText) { cleanOcrText(editableText) }
+    val visibleText = if (selectedTab == TextTab.Original) editableText else cleanedText
+    val hasText = editableText.isNotBlank()
+    val hasUnsavedChanges = editableText != selectedDocument?.extractedText.orEmpty()
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -130,14 +139,39 @@ fun ExtractTextDialog(
                 Text(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .heightIn(min = 120.dp, max = 260.dp),
-                    text = if (hasText) {
-                        visibleText
-                    } else {
-                        "No text extracted yet. Re-scan or import a clearer document."
-                    },
-                    style = MaterialTheme.typography.bodyMedium,
+                        .padding(top = 2.dp),
+                    text = "OCR layer text is used for document search and future searchable PDF export.",
+                    style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
+                OutlinedTextField(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 160.dp, max = 280.dp),
+                    value = visibleText,
+                    onValueChange = { value ->
+                        if (selectedTab == TextTab.Original) {
+                            editableText = value
+                        } else {
+                            editableText = value
+                            selectedTab = TextTab.Original
+                        }
+                    },
+                    label = {
+                        Text(
+                            text = if (selectedTab == TextTab.Original) {
+                                "Recognized text"
+                            } else {
+                                "Cleaned text preview"
+                            }
+                        )
+                    },
+                    placeholder = {
+                        Text(text = "No text recognized yet. Paste or type OCR text here.")
+                    },
+                    textStyle = MaterialTheme.typography.bodyMedium,
+                    minLines = 6
                 )
 
                 Row(
@@ -146,31 +180,34 @@ fun ExtractTextDialog(
                 ) {
                     Button(
                         modifier = Modifier.weight(1f),
-                        enabled = hasText,
+                        enabled = selectedDocument != null && hasUnsavedChanges,
                         onClick = {
-                            if (cleanedText.isBlank()) {
-                                onValidationError("No OCR text available to clean.")
+                            val document = selectedDocument
+                            if (document == null) {
+                                onValidationError("Select a document first.")
                             } else {
-                                clipboardManager.setText(AnnotatedString(cleanedText))
-                                onValidationError("Cleaned text copied.")
+                                onSaveText(document, editableText)
                             }
                         }
                     ) {
-                        Text(text = "Copy Cleaned Text")
+                        Icon(imageVector = Icons.Default.Save, contentDescription = null)
+                        Text(modifier = Modifier.padding(start = 6.dp), text = "Save")
                     }
                     Button(
                         modifier = Modifier.weight(1f),
                         enabled = hasText,
                         onClick = {
-                            val document = selectedDocument
-                            if (document == null || cleanedText.isBlank()) {
-                                onValidationError("No OCR text available to clean.")
+                            val copyText = if (selectedTab == TextTab.Cleaned) cleanedText else editableText
+                            if (copyText.isBlank()) {
+                                onValidationError("No OCR text is available to copy.")
                             } else {
-                                onShareCleanedText(document.title, cleanedText)
+                                clipboardManager.setText(AnnotatedString(copyText))
+                                onValidationError("Text copied.")
                             }
                         }
                     ) {
-                        Text(text = "Share Cleaned Text")
+                        Icon(imageVector = Icons.Default.ContentCopy, contentDescription = null)
+                        Text(modifier = Modifier.padding(start = 6.dp), text = "Copy")
                     }
                 }
 
@@ -195,32 +232,33 @@ fun ExtractTextDialog(
                         enabled = hasText,
                         onClick = {
                             val document = selectedDocument
-                            if (document == null || cleanedText.isBlank()) {
-                                onValidationError("No OCR text available to clean.")
+                            val shareText = if (selectedTab == TextTab.Cleaned) cleanedText else editableText
+                            if (document == null || shareText.isBlank()) {
+                                onValidationError("No OCR text is available for this document.")
                             } else {
-                                onExportCleanedText(document.title, cleanedText, "doc")
+                                onShareCleanedText(document.title, shareText)
                             }
                         }
                     ) {
-                        Text(text = "Export DOC")
+                        Icon(imageVector = Icons.Default.Share, contentDescription = null)
+                        Text(modifier = Modifier.padding(start = 4.dp), text = "Share")
                     }
                 }
             }
         },
         confirmButton = {
             TextButton(
-                enabled = documents.isNotEmpty(),
+                enabled = hasText,
                 onClick = {
                     val document = selectedDocument
-                    if (document == null || document.extractedText.isNullOrBlank()) {
+                    if (document == null || editableText.isBlank()) {
                         onValidationError("No OCR text is available for this document.")
                     } else {
-                        clipboardManager.setText(AnnotatedString(document.extractedText))
-                        onValidationError("Text copied.")
+                        onExportCleanedText(document.title, editableText, "doc")
                     }
                 }
             ) {
-                Text(text = "Copy text")
+                Text(text = "Export DOC")
             }
         },
         dismissButton = {
@@ -229,10 +267,10 @@ fun ExtractTextDialog(
                     enabled = documents.isNotEmpty(),
                     onClick = {
                         val document = selectedDocument
-                        if (document == null || document.extractedText.isNullOrBlank()) {
+                        if (document == null || editableText.isBlank()) {
                             onValidationError("No OCR text is available for this document.")
                         } else {
-                            onShareText(document)
+                            onShareCleanedText(document.title, editableText)
                         }
                     }
                 ) {

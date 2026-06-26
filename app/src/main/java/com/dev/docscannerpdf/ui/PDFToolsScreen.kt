@@ -74,6 +74,7 @@ fun PDFToolsScreen(
     onShareExtractedText: (DocumentEntity) -> Unit,
     onShareCleanedText: (String, String) -> Unit,
     onExportCleanedText: (String, String, String) -> Unit,
+    onSaveOcrText: (DocumentEntity, String) -> Unit,
     onComingSoon: (String) -> Unit
 ) {
     var showRenameDialog by remember { mutableStateOf(false) }
@@ -164,6 +165,7 @@ fun PDFToolsScreen(
             onShareText = onShareExtractedText,
             onShareCleanedText = onShareCleanedText,
             onExportCleanedText = onExportCleanedText,
+            onSaveText = onSaveOcrText,
             onValidationError = onComingSoon
         )
     }
@@ -177,6 +179,7 @@ fun PDFToolsScreen(
             onShareText = onShareExtractedText,
             onShareCleanedText = onShareCleanedText,
             onExportCleanedText = onExportCleanedText,
+            onSaveText = onSaveOcrText,
             onValidationError = onComingSoon
         )
     }
