@@ -17,6 +17,8 @@ import com.dev.docscannerpdf.domain.backup.BackupRepository
 import com.dev.docscannerpdf.navigation.canHandleSystemBack
 import com.dev.docscannerpdf.navigation.handleSystemBack
 import com.dev.docscannerpdf.ui.debug.ApiHealthScreen
+import com.dev.docscannerpdf.ui.library.DocumentLibraryScreen
+import com.dev.docscannerpdf.ui.library.buildDocumentLibraryState
 import com.dev.docscannerpdf.ui.result.DocumentResultScreen
 import com.dev.docscannerpdf.ui.theme.DocScannerPDFTheme
 import com.dev.docscannerpdf.util.AppConstants
@@ -619,6 +621,66 @@ internal fun DocScannerApp(host: MainActivity) {
                         },
                         modifier = Modifier.fillMaxSize()
                     )
+                } else if (host.showDocumentLibrary) {
+                    val libraryState = buildDocumentLibraryState(
+                        documents = uiState.documents,
+                        query = host.documentLibraryQuery,
+                        sort = host.documentLibrarySort
+                    )
+                    DocumentLibraryScreen(
+                        state = libraryState,
+                        onBack = host::closeDocumentLibrary,
+                        onQueryChange = { host.documentLibraryQuery = it },
+                        onSortChange = { host.documentLibrarySort = it },
+                        onOpenDocument = { item ->
+                            uiState.documents.firstOrNull { it.id == item.id }
+                                ?.let(host::openLibraryDocument)
+                        },
+                        onToggleFavorite = { item ->
+                            uiState.documents.firstOrNull { it.id == item.id }?.let { document ->
+                                host.viewModel.setDocumentFavorite(document, !document.isFavorite)
+                            }
+                        },
+                        onRenameDocument = { item ->
+                            host.libraryPendingRename =
+                                uiState.documents.firstOrNull { it.id == item.id }
+                        },
+                        onDeleteDocument = { item ->
+                            host.libraryPendingDelete =
+                                uiState.documents.firstOrNull { it.id == item.id }
+                        }
+                    )
+                    host.libraryPendingRename?.let { document ->
+                        RenameDocumentDialog(
+                            documents = uiState.documents,
+                            initialDocument = document,
+                            onDismiss = { host.libraryPendingRename = null },
+                            onRename = host.viewModel::renameDocument,
+                            onValidationError = host.viewModel::showError
+                        )
+                    }
+                    host.libraryPendingDelete?.let { document ->
+                        AlertDialog(
+                            onDismissRequest = { host.libraryPendingDelete = null },
+                            title = { Text(text = "Move to Trash?") },
+                            text = { Text(text = "This document moves to Trash and can be restored within 30 days.") },
+                            confirmButton = {
+                                TextButton(
+                                    onClick = {
+                                        host.libraryPendingDelete = null
+                                        host.deleteDocument(document)
+                                    }
+                                ) {
+                                    Text(text = "Move to Trash")
+                                }
+                            },
+                            dismissButton = {
+                                TextButton(onClick = { host.libraryPendingDelete = null }) {
+                                    Text(text = "Cancel")
+                                }
+                            }
+                        )
+                    }
                 } else {
                     ScannerDashboardScreen(
                         viewModel = host.viewModel,
@@ -633,7 +695,7 @@ internal fun DocScannerApp(host: MainActivity) {
                         onExtractText = { host.showPdfTools = true },
                         onAiTools = { host.showAiTools = true },
                         onAllTools = { host.showPdfTools = true },
-                        onViewAll = { host.showPdfTools = true },
+                        onViewAll = host::openDocumentLibrary,
                         onOpenSettings = { host.showAppLockSettings = true },
                         onToWord = host::exportTextDocument,
                         onOpenDocument = { document -> host.pdfViewerDocument = document },

@@ -81,6 +81,9 @@ import com.dev.docscannerpdf.process.ScannerFlowValidationUseCase
 import com.dev.docscannerpdf.process.toScannerBackendProcessingState
 import com.dev.docscannerpdf.ui.result.DocumentResultState
 import com.dev.docscannerpdf.ui.result.toDocumentResultState
+import com.dev.docscannerpdf.ui.library.DocumentLibrarySort
+import com.dev.docscannerpdf.ui.library.isResultScreenEligible
+import com.dev.docscannerpdf.ui.library.toLibraryResultState
 import com.dev.docscannerpdf.ui.DocScannerApp
 import com.dev.docscannerpdf.util.AppConstants
 import com.dev.docscannerpdf.ui.APP_PIN_LENGTH
@@ -171,6 +174,11 @@ class MainActivity : FragmentActivity() {
     internal var signatureTargetUri by mutableStateOf<Uri?>(null)
     internal var showPdfTools by mutableStateOf(false)
     internal var showAiTools by mutableStateOf(false)
+    internal var showDocumentLibrary by mutableStateOf(false)
+    internal var documentLibraryQuery by mutableStateOf("")
+    internal var documentLibrarySort by mutableStateOf(DocumentLibrarySort.NEWEST)
+    internal var libraryPendingRename by mutableStateOf<DocumentEntity?>(null)
+    internal var libraryPendingDelete by mutableStateOf<DocumentEntity?>(null)
     internal var pdfToolsMessage by mutableStateOf<String?>(null)
     internal var pdfViewerDocument by mutableStateOf<DocumentEntity?>(null)
     internal var viewerDocumentPendingDelete by mutableStateOf<DocumentEntity?>(null)
@@ -917,6 +925,32 @@ class MainActivity : FragmentActivity() {
 
     internal fun closeDocumentResult() {
         documentResultState = null
+    }
+
+    /** Opens the local-first document library; documents load from Room with no backend calls. */
+    internal fun openDocumentLibrary() {
+        showDocumentLibrary = true
+    }
+
+    internal fun closeDocumentLibrary() {
+        showDocumentLibrary = false
+        documentLibraryQuery = ""
+        libraryPendingRename = null
+        libraryPendingDelete = null
+    }
+
+    /**
+     * Routes a library document to the best existing destination: the unified
+     * [com.dev.docscannerpdf.ui.result.DocumentResultScreen] when it carries OCR text or an
+     * image preview, otherwise the existing PDF viewer. The library stays open underneath so
+     * backing out returns here.
+     */
+    internal fun openLibraryDocument(document: DocumentEntity) {
+        if (isResultScreenEligible(document)) {
+            documentResultState = document.toLibraryResultState()
+        } else {
+            pdfViewerDocument = document
+        }
     }
 
     /**
