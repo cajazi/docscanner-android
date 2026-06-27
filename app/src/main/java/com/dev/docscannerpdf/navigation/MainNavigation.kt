@@ -41,6 +41,7 @@ internal fun MainActivity.currentScreen(): MainScreen {
         showImagesToPdf -> MainScreen.ImagesToPdf
         showCompressPdf -> MainScreen.CompressPdf
         showPdfTools -> MainScreen.PdfTools
+        showDocumentLibrary -> MainScreen.DocumentLibrary
         imageImportReview != null -> MainScreen.ImageImportReview
         pendingImageImport != null -> MainScreen.ImageEditor
         importedImagePreview != null -> MainScreen.ImportedImagePreview
@@ -80,6 +81,10 @@ internal fun MainActivity.handleSystemBack() {
         showCompressPdf -> closeCompressPdf()
         showAiTools -> showAiTools = false
         showPdfTools -> showPdfTools = false
+        // While the library is open, a document opened into the result screen backs out to
+        // the library first; otherwise system back closes the library itself.
+        showDocumentLibrary && documentResultState != null -> closeDocumentResult()
+        showDocumentLibrary -> closeDocumentLibrary()
         importedImagePreview != null -> {
             pendingImageImport = importedImagePreview
             importedImagePreview = null

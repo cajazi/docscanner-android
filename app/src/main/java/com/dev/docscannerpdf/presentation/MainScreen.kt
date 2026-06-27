@@ -23,6 +23,7 @@ enum class MainScreen {
     ImagesToPdf,
     CompressPdf,
     PdfTools,
+    DocumentLibrary,
     ImageImportReview,
     ImageEditor,
     ImportedImagePreview
