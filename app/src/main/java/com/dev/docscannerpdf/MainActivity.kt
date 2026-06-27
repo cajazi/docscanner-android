@@ -84,6 +84,10 @@ import com.dev.docscannerpdf.ui.result.toDocumentResultState
 import com.dev.docscannerpdf.ui.library.DocumentLibrarySort
 import com.dev.docscannerpdf.ui.library.isResultScreenEligible
 import com.dev.docscannerpdf.ui.library.toLibraryResultState
+import com.dev.docscannerpdf.ui.pages.MultiPageEditorReducer
+import com.dev.docscannerpdf.ui.pages.MultiPageEditorState
+import com.dev.docscannerpdf.ui.pages.shouldOpenMultiPageEditor
+import com.dev.docscannerpdf.ui.pages.toMultiPageEditorState
 import com.dev.docscannerpdf.ui.DocScannerApp
 import com.dev.docscannerpdf.util.AppConstants
 import com.dev.docscannerpdf.ui.APP_PIN_LENGTH
@@ -179,6 +183,7 @@ class MainActivity : FragmentActivity() {
     internal var documentLibrarySort by mutableStateOf(DocumentLibrarySort.NEWEST)
     internal var libraryPendingRename by mutableStateOf<DocumentEntity?>(null)
     internal var libraryPendingDelete by mutableStateOf<DocumentEntity?>(null)
+    internal var multiPageEditorState by mutableStateOf<MultiPageEditorState?>(null)
     internal var pdfToolsMessage by mutableStateOf<String?>(null)
     internal var pdfViewerDocument by mutableStateOf<DocumentEntity?>(null)
     internal var viewerDocumentPendingDelete by mutableStateOf<DocumentEntity?>(null)
@@ -946,11 +951,56 @@ class MainActivity : FragmentActivity() {
      * backing out returns here.
      */
     internal fun openLibraryDocument(document: DocumentEntity) {
-        if (isResultScreenEligible(document)) {
-            documentResultState = document.toLibraryResultState()
-        } else {
-            pdfViewerDocument = document
+        when {
+            shouldOpenMultiPageEditor(document) -> openMultiPageEditor(document)
+            isResultScreenEligible(document) -> documentResultState = document.toLibraryResultState()
+            else -> pdfViewerDocument = document
         }
+    }
+
+    /**
+     * Opens the multi-page editor for a multi-page document, deriving pages from the stored
+     * document (no backend calls). Edits live in-memory for this slice and are not persisted.
+     */
+    internal fun openMultiPageEditor(document: DocumentEntity) {
+        multiPageEditorState = document.toMultiPageEditorState()
+    }
+
+    internal fun closeMultiPageEditor() {
+        multiPageEditorState = null
+    }
+
+    private fun updateEditor(transform: (MultiPageEditorState) -> MultiPageEditorState) {
+        multiPageEditorState = multiPageEditorState?.let(transform)
+    }
+
+    internal fun editorSelectPage(pageId: String) =
+        updateEditor { MultiPageEditorReducer.select(it, pageId) }
+
+    internal fun editorMovePageUp(pageId: String) =
+        updateEditor { MultiPageEditorReducer.movePageUp(it, pageId) }
+
+    internal fun editorMovePageDown(pageId: String) =
+        updateEditor { MultiPageEditorReducer.movePageDown(it, pageId) }
+
+    internal fun editorDuplicatePage(pageId: String) =
+        updateEditor { MultiPageEditorReducer.duplicatePage(it, pageId) }
+
+    internal fun editorRotatePage(pageId: String) =
+        updateEditor { MultiPageEditorReducer.rotatePage(it, pageId) }
+
+    internal fun editorRequestDeletePage(pageId: String) =
+        updateEditor { MultiPageEditorReducer.requestDelete(it, pageId) }
+
+    internal fun editorCancelDeletePage() =
+        updateEditor { MultiPageEditorReducer.cancelDelete(it) }
+
+    internal fun editorConfirmDeletePage() =
+        updateEditor { MultiPageEditorReducer.confirmDelete(it) }
+
+    /** Adding pages to an existing document is not wired yet; surfaced as a placeholder. */
+    internal fun editorAddPagePlaceholder() {
+        viewModel.showError("Adding pages to an existing document is coming soon.")
     }
 
     /**

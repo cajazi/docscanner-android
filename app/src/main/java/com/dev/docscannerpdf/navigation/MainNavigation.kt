@@ -41,6 +41,7 @@ internal fun MainActivity.currentScreen(): MainScreen {
         showImagesToPdf -> MainScreen.ImagesToPdf
         showCompressPdf -> MainScreen.CompressPdf
         showPdfTools -> MainScreen.PdfTools
+        multiPageEditorState != null -> MainScreen.MultiPageEditor
         showDocumentLibrary -> MainScreen.DocumentLibrary
         imageImportReview != null -> MainScreen.ImageImportReview
         pendingImageImport != null -> MainScreen.ImageEditor
@@ -81,6 +82,8 @@ internal fun MainActivity.handleSystemBack() {
         showCompressPdf -> closeCompressPdf()
         showAiTools -> showAiTools = false
         showPdfTools -> showPdfTools = false
+        // The multi-page editor backs out to its launch point (e.g. the library) first.
+        multiPageEditorState != null -> closeMultiPageEditor()
         // While the library is open, a document opened into the result screen backs out to
         // the library first; otherwise system back closes the library itself.
         showDocumentLibrary && documentResultState != null -> closeDocumentResult()

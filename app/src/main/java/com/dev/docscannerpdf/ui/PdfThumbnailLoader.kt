@@ -101,6 +101,49 @@ object PdfThumbnailLoader {
         }
     }
 
+    /**
+     * Renders a single page (by zero-based [pageIndex]) of a PDF, or the image itself for an
+     * image document. Used by the multi-page editor to show distinct per-page thumbnails and
+     * the selected-page preview. Returns null when the page index is out of range or the file
+     * cannot be read.
+     */
+    suspend fun loadPageBitmap(
+        context: Context,
+        uriValue: String,
+        pageIndex: Int,
+        width: Int = PAGE_PREVIEW_WIDTH,
+        height: Int = PAGE_PREVIEW_HEIGHT
+    ): Bitmap? {
+        return withContext(Dispatchers.IO) {
+            runCatching {
+                val uri = Uri.parse(uriValue)
+                if (isImageUri(uri, uriValue)) {
+                    return@runCatching decodeImageThumbnail(context, uri, uriValue, width, height)
+                }
+                openFileDescriptor(context, uri, uriValue)?.use { descriptor ->
+                    PdfRenderer(descriptor).use { renderer ->
+                        if (pageIndex !in 0 until renderer.pageCount) return@use null
+                        renderer.openPage(pageIndex).use { page ->
+                            val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+                            bitmap.eraseColor(Color.WHITE)
+                            page.render(
+                                bitmap,
+                                null,
+                                null,
+                                PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY
+                            )
+                            bitmap
+                        }
+                    }
+                }
+            }.onFailure { throwable ->
+                if (Log.isLoggable(TAG, Log.DEBUG)) {
+                    Log.w(TAG, "Unable to render PDF page $pageIndex: ${throwable.message}")
+                }
+            }.getOrNull()
+        }
+    }
+
     private suspend fun loadBitmap(
         context: Context,
         pdfUriValue: String,
