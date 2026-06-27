@@ -81,7 +81,7 @@ fun DocumentResultScreen(
     onShareText: (String) -> Unit,
     onExportTxt: (String) -> Unit,
     onExportDoc: (String) -> Unit,
-    onPdfPlaceholder: () -> Unit,
+    onExportPdf: (String) -> Unit,
     onRetry: () -> Unit
 ) {
     val clipboardManager = LocalClipboardManager.current
@@ -147,7 +147,7 @@ fun DocumentResultScreen(
                 onShare = { onShareText(editableText) },
                 onExportTxt = { onExportTxt(editableText) },
                 onExportDoc = { onExportDoc(editableText) },
-                onPdf = onPdfPlaceholder
+                onPdf = { onExportPdf(editableText) }
             )
         }
     }
@@ -515,9 +515,15 @@ private fun ResultActionsRow(
                     modifier = Modifier.weight(1f)
                 )
             }
-            if (!actions.isPdfEnabled) {
+            if (actions.isPdfEnabled) {
                 Text(
-                    text = "PDF, TXT and DOC export are placeholders in this build.",
+                    text = "PDF export renders the page image with an invisible, searchable OCR layer.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = Color(0xFF8A8E96)
+                )
+            } else {
+                Text(
+                    text = "Searchable PDF export needs a processed page image from the backend.",
                     style = MaterialTheme.typography.labelSmall,
                     color = Color(0xFF8A8E96)
                 )

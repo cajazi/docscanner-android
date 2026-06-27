@@ -64,7 +64,8 @@ data class DocumentResultState(
 
 /**
  * Deterministic availability of the result action row. Text actions require usable OCR
- * text; PDF export is an explicit placeholder for this slice and is never enabled yet.
+ * text; searchable PDF export requires a backend page image (enhanced or processed) to
+ * render — the OCR text, when present, is embedded as an invisible searchable layer.
  */
 data class DocumentResultActions(
     val canCopyText: Boolean,
@@ -74,6 +75,10 @@ data class DocumentResultActions(
     val isPdfEnabled: Boolean
 )
 
+/** True when a backend page image exists to render a searchable PDF from. */
+val DocumentResultState.hasExportableImage: Boolean
+    get() = !enhancedImageUrl.isNullOrBlank() || !processedImageUrl.isNullOrBlank()
+
 fun DocumentResultState.availableActions(): DocumentResultActions {
     val hasText = hasOcrText
     return DocumentResultActions(
@@ -81,7 +86,7 @@ fun DocumentResultState.availableActions(): DocumentResultActions {
         canShareText = hasText,
         canExportTxt = hasText,
         canExportDoc = hasText,
-        // PDF export is intentionally not implemented in this slice.
-        isPdfEnabled = false
+        // Searchable PDF export needs a real page image to render; the OCR layer is optional.
+        isPdfEnabled = hasExportableImage
     )
 }
