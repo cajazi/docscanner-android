@@ -47,6 +47,12 @@ interface DocScannerApiService {
         @Path("jobId") jobId: String
     ): Response<ProcessJobStatus>
 
+    @GET("engine/documents/{documentId}/pages/{pageId}/ocr")
+    suspend fun getPageOcr(
+        @Path("documentId") documentId: String,
+        @Path("pageId") pageId: String
+    ): Response<PageOcrResultDto>
+
     @POST("engine/documents/{documentId}/pdf-export-jobs")
     suspend fun createPdfExportJob(
         @Path("documentId") documentId: String,
@@ -191,6 +197,29 @@ data class ProcessStageFailure(
     val stage: String,
     val errorMessage: String? = null
 )
+
+/**
+ * Response body for GET /engine/documents/{documentId}/pages/{pageId}/ocr.
+ *
+ * The backend OCR text may surface under one of a few field names depending on the
+ * pipeline stage that produced it, so we accept the common aliases and coalesce them
+ * in [resolvedText]. We never synthesize text here — a blank/missing payload stays blank.
+ */
+@Serializable
+data class PageOcrResultDto(
+    val documentId: String? = null,
+    val pageId: String? = null,
+    val text: String? = null,
+    val ocrText: String? = null,
+    val content: String? = null,
+    val status: String? = null,
+    val language: String? = null,
+    val confidence: Double? = null
+) {
+    /** First non-blank OCR text field exposed by the backend, or null when none is present. */
+    fun resolvedText(): String? =
+        listOfNotNull(text, ocrText, content).firstOrNull { it.isNotBlank() }
+}
 
 @Serializable
 data class CreatePdfExportJobRequest(

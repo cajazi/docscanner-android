@@ -12,6 +12,7 @@ import com.dev.docscannerpdf.network.HealthResponse
 import com.dev.docscannerpdf.network.LinkUploadedImageToPageRequest
 import com.dev.docscannerpdf.network.NetworkClient
 import com.dev.docscannerpdf.network.NetworkResult
+import com.dev.docscannerpdf.network.PageOcrResultDto
 import com.dev.docscannerpdf.network.PdfExportJobResponse
 import com.dev.docscannerpdf.network.ProcessJobStatus
 import com.dev.docscannerpdf.network.ProcessPageRequest
@@ -20,6 +21,7 @@ import com.dev.docscannerpdf.network.UploadedImageDto
 import com.dev.docscannerpdf.network.safeApiCall
 import com.dev.docscannerpdf.process.ProcessDocumentResult
 import com.dev.docscannerpdf.process.ProcessedImageResult
+import com.dev.docscannerpdf.process.ScannerOcrResult
 import com.dev.docscannerpdf.upload.ImageUploadPreparer
 import com.dev.docscannerpdf.upload.UploadProgressListener
 import java.text.SimpleDateFormat
@@ -142,6 +144,39 @@ class DocScannerRemoteRepository(
 
     suspend fun pollProcessJob(jobId: String): NetworkResult<ProcessJobStatus> {
         return safeApiCall { apiService.getProcessJob(jobId) }
+    }
+
+    suspend fun getPageOcr(
+        documentId: String,
+        pageId: String
+    ): NetworkResult<PageOcrResultDto> {
+        return safeApiCall { apiService.getPageOcr(documentId = documentId, pageId = pageId) }
+    }
+
+    /**
+     * Maps a backend OCR fetch into a [ScannerOcrResult] without fabricating text:
+     * a transport/HTTP failure becomes [ScannerOcrResult.Failed], a successful response
+     * with usable text becomes [ScannerOcrResult.Available], and a successful but blank
+     * response becomes [ScannerOcrResult.Empty].
+     */
+    fun resolveOcrResult(result: NetworkResult<PageOcrResultDto>): ScannerOcrResult {
+        return when (result) {
+            is NetworkResult.Success -> {
+                val text = result.data.resolvedText()
+                if (text.isNullOrBlank()) {
+                    ScannerOcrResult.Empty
+                } else {
+                    ScannerOcrResult.Available(text)
+                }
+            }
+            is NetworkResult.Error -> ScannerOcrResult.Failed(
+                result.errorBody?.takeIf { it.isNotBlank() }
+                    ?: "OCR request failed: HTTP ${result.code} ${result.message}"
+            )
+            is NetworkResult.Exception -> ScannerOcrResult.Failed(
+                result.throwable.message ?: "OCR request failed."
+            )
+        }
     }
 
     fun resolveProcessedImageResult(status: ProcessJobStatus): ProcessedImageResult {
