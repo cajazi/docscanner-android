@@ -20,8 +20,11 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.Redo
 import androidx.compose.material.icons.automirrored.filled.TextSnippet
+import androidx.compose.material.icons.automirrored.filled.Undo
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.PictureAsPdf
 import androidx.compose.material.icons.filled.Refresh
@@ -56,7 +59,12 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.clickable
 import coil.compose.AsyncImage
+import com.dev.docscannerpdf.domain.annotation.AnnotationEditorState
+import com.dev.docscannerpdf.domain.annotation.AnnotationStroke
+import com.dev.docscannerpdf.domain.annotation.AnnotationTool
+import com.dev.docscannerpdf.ui.annotation.AnnotationCanvasOverlay
 
 private val ScreenBackground = Color(0xFF101114)
 private val PanelBackground = Color(0xFF1B1C20)
@@ -82,7 +90,13 @@ fun DocumentResultScreen(
     onExportTxt: (String) -> Unit,
     onExportDoc: (String) -> Unit,
     onExportPdf: (String) -> Unit,
-    onRetry: () -> Unit
+    onRetry: () -> Unit,
+    annotationState: AnnotationEditorState? = null,
+    onToggleAnnotateMode: () -> Unit = {},
+    onSelectAnnotationTool: (AnnotationTool) -> Unit = {},
+    onAddAnnotationStroke: (AnnotationStroke) -> Unit = {},
+    onUndoAnnotation: () -> Unit = {},
+    onRedoAnnotation: () -> Unit = {}
 ) {
     val clipboardManager = LocalClipboardManager.current
     // Reseed the editor whenever the backend OCR text changes (e.g. after a retry),
@@ -128,7 +142,15 @@ fun DocumentResultScreen(
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             ResultHeaderSection(state)
-            ResultImageSection(state)
+            ResultImageSection(
+                state = state,
+                annotationState = annotationState,
+                onToggleAnnotateMode = onToggleAnnotateMode,
+                onSelectAnnotationTool = onSelectAnnotationTool,
+                onAddAnnotationStroke = onAddAnnotationStroke,
+                onUndoAnnotation = onUndoAnnotation,
+                onRedoAnnotation = onRedoAnnotation
+            )
             ResultOcrSection(
                 state = state,
                 editableText = editableText,
@@ -223,8 +245,18 @@ private fun ResultIdLine(label: String, value: String?) {
 }
 
 @Composable
-private fun ResultImageSection(state: DocumentResultState) {
+private fun ResultImageSection(
+    state: DocumentResultState,
+    annotationState: AnnotationEditorState?,
+    onToggleAnnotateMode: () -> Unit,
+    onSelectAnnotationTool: (AnnotationTool) -> Unit,
+    onAddAnnotationStroke: (AnnotationStroke) -> Unit,
+    onUndoAnnotation: () -> Unit,
+    onRedoAnnotation: () -> Unit
+) {
     val model = state.preferredImageModel
+    val annotationsAvailable = annotationState != null && !model.isNullOrBlank()
+    val annotating = annotationState?.isAnnotating == true
     Surface(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(10.dp),
@@ -234,12 +266,25 @@ private fun ResultImageSection(state: DocumentResultState) {
             modifier = Modifier.padding(14.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            Text(
-                text = "Preview",
-                style = MaterialTheme.typography.titleSmall,
-                color = Color.White,
-                fontWeight = FontWeight.SemiBold
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "Preview",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = Color.White,
+                    fontWeight = FontWeight.SemiBold
+                )
+                if (annotationsAvailable) {
+                    TextButton(onClick = onToggleAnnotateMode) {
+                        Icon(Icons.Default.Edit, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text(if (annotating) "Done" else "Annotate")
+                    }
+                }
+            }
             if (model.isNullOrBlank()) {
                 Box(
                     modifier = Modifier
@@ -256,22 +301,103 @@ private fun ResultImageSection(state: DocumentResultState) {
                     )
                 }
             } else {
-                AsyncImage(
-                    model = model,
-                    contentDescription = "Document result preview",
+                Box(
                     modifier = Modifier
                         .fillMaxWidth()
                         .aspectRatio(1f / 1.2f)
                         .clip(RoundedCornerShape(8.dp))
                         .background(Color.Black)
-                )
-                Text(
-                    text = imageSourceLabel(state),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = Color(0xFF8A8E96)
-                )
+                ) {
+                    // The image model never changes when toggling annotate mode, so switching
+                    // modes never reloads the image.
+                    AsyncImage(
+                        model = model,
+                        contentDescription = "Document result preview",
+                        modifier = Modifier.fillMaxSize()
+                    )
+                    if (annotationState != null) {
+                        AnnotationCanvasOverlay(
+                            annotations = annotationState.page.annotations,
+                            tool = annotationState.tool,
+                            enabled = annotationState.isAnnotating,
+                            strokeColor = toolColor(annotationState.tool),
+                            strokeThickness = 6f,
+                            onStrokeFinished = onAddAnnotationStroke,
+                            modifier = Modifier.matchParentSize()
+                        )
+                    }
+                }
+                if (annotating && annotationState != null) {
+                    AnnotationToolbar(
+                        state = annotationState,
+                        onSelectTool = onSelectAnnotationTool,
+                        onUndo = onUndoAnnotation,
+                        onRedo = onRedoAnnotation
+                    )
+                } else {
+                    Text(
+                        text = imageSourceLabel(state),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Color(0xFF8A8E96)
+                    )
+                }
             }
         }
+    }
+}
+
+private fun toolColor(tool: AnnotationTool): Color = when (tool) {
+    AnnotationTool.PEN -> Color(0xFFE53935)
+    AnnotationTool.HIGHLIGHT -> Color(0xFFFFEB3B)
+    AnnotationTool.TEXT -> Color(0xFF6C8CFF)
+}
+
+@Composable
+private fun AnnotationToolbar(
+    state: AnnotationEditorState,
+    onSelectTool: (AnnotationTool) -> Unit,
+    onUndo: () -> Unit,
+    onRedo: () -> Unit
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        ToolChip(
+            label = "Pen",
+            selected = state.tool == AnnotationTool.PEN,
+            onClick = { onSelectTool(AnnotationTool.PEN) }
+        )
+        ToolChip(
+            label = "Highlight",
+            selected = state.tool == AnnotationTool.HIGHLIGHT,
+            onClick = { onSelectTool(AnnotationTool.HIGHLIGHT) }
+        )
+        Spacer(Modifier.weight(1f))
+        IconButton(onClick = onUndo, enabled = state.page.canUndo) {
+            Icon(Icons.AutoMirrored.Filled.Undo, contentDescription = "Undo", tint = Color.White)
+        }
+        IconButton(onClick = onRedo, enabled = state.page.canRedo) {
+            Icon(Icons.AutoMirrored.Filled.Redo, contentDescription = "Redo", tint = Color.White)
+        }
+    }
+}
+
+@Composable
+private fun ToolChip(label: String, selected: Boolean, onClick: () -> Unit) {
+    Surface(
+        modifier = Modifier.clip(RoundedCornerShape(8.dp)).clickable(onClick = onClick),
+        color = if (selected) Accent.copy(alpha = 0.25f) else Color(0xFF2B2C30),
+        shape = RoundedCornerShape(8.dp)
+    ) {
+        Text(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+            text = label,
+            style = MaterialTheme.typography.labelMedium,
+            color = if (selected) Accent else Color(0xFFB8BDC4),
+            fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal
+        )
     }
 }
 
