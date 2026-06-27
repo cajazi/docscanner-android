@@ -73,6 +73,9 @@ import com.dev.docscannerpdf.presentation.WatermarkOutput
 import com.dev.docscannerpdf.presentation.WatermarkPreview
 import com.dev.docscannerpdf.process.ProcessDocumentUseCase
 import com.dev.docscannerpdf.process.ScannerBackendProcessingState
+import com.dev.docscannerpdf.process.ScannerFlowStage
+import com.dev.docscannerpdf.process.ScannerFlowValidationState
+import com.dev.docscannerpdf.process.ScannerFlowValidationUseCase
 import com.dev.docscannerpdf.process.toScannerBackendProcessingState
 import com.dev.docscannerpdf.ui.DocScannerApp
 import com.dev.docscannerpdf.util.AppConstants
@@ -149,12 +152,14 @@ class MainActivity : FragmentActivity() {
     private var pendingScanTitlePrefix = DEFAULT_SCAN_TITLE_PREFIX
     private var pendingScanIsIdCardScan = false
     private val processDocumentUseCase = ProcessDocumentUseCase()
+    private val scannerFlowValidationUseCase = ScannerFlowValidationUseCase()
     internal var imageImportReview by mutableStateOf<PendingImageReview?>(null)
     internal var pendingImageImport by mutableStateOf<PendingImageImport?>(null)
     internal var importedImagePreview by mutableStateOf<PendingImageImport?>(null)
     internal var scannerBackendProcessingState by mutableStateOf<ScannerBackendProcessingState>(
         ScannerBackendProcessingState.Idle
     )
+    internal var scannerFlowValidationState by mutableStateOf(ScannerFlowValidationState())
     internal var imageEditorMessage by mutableStateOf<String?>(null)
     internal var showSignaturePad by mutableStateOf(false)
     internal var signatureTargetUri by mutableStateOf<Uri?>(null)
@@ -224,6 +229,7 @@ class MainActivity : FragmentActivity() {
                 pendingImageImport = null
                 imageEditorMessage = null
                 scannerBackendProcessingState = ScannerBackendProcessingState.Idle
+                scannerFlowValidationState = ScannerFlowValidationState()
                 importedImagePreview = PendingImageImport(
                     imageUri = previewPageUri,
                     title = "$pendingScanTitlePrefix ${SimpleDateFormat("dd-MM-yyyy HH.mm", Locale.getDefault()).format(Date())}"
@@ -759,6 +765,7 @@ class MainActivity : FragmentActivity() {
         pendingImageImport = null
         importedImagePreview = null
         scannerBackendProcessingState = ScannerBackendProcessingState.Idle
+        scannerFlowValidationState = ScannerFlowValidationState()
         imageEditorMessage = null
     }
 
@@ -809,6 +816,7 @@ class MainActivity : FragmentActivity() {
             )
             pendingImageImport = null
             scannerBackendProcessingState = ScannerBackendProcessingState.Idle
+            scannerFlowValidationState = ScannerFlowValidationState()
             importedImagePreview = finalState
         }
     }
@@ -850,6 +858,33 @@ class MainActivity : FragmentActivity() {
                     )
                 }
             }
+        }
+    }
+
+    /**
+     * Runs the full end-to-end scanner validation slice (upload -> process -> poll ->
+     * resolve processed image -> fetch OCR) against the current scanned/imported preview,
+     * streaming every milestone into [scannerFlowValidationState]. Also serves as the
+     * retry entry point for the whole flow.
+     */
+    internal fun runScannerFlowValidation() {
+        val preview = importedImagePreview
+        if (preview == null) {
+            scannerFlowValidationState = ScannerFlowValidationState(
+                stage = ScannerFlowStage.ERROR,
+                statusMessage = "No scanned image is available for validation.",
+                failureReason = "No scanned image is available for validation."
+            )
+            return
+        }
+
+        lifecycleScope.launch {
+            scannerFlowValidationUseCase.validate(
+                context = this@MainActivity,
+                imageUri = preview.imageUri,
+                title = preview.title,
+                onState = { state -> scannerFlowValidationState = state }
+            )
         }
     }
 

@@ -91,6 +91,9 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.runtime.mutableStateListOf
 import com.dev.docscannerpdf.process.ScannerBackendProcessingState
+import com.dev.docscannerpdf.process.ScannerFlowStage
+import com.dev.docscannerpdf.process.ScannerFlowValidationState
+import com.dev.docscannerpdf.process.ScannerOcrStatus
 import com.dev.docscannerpdf.process.isActive
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -479,8 +482,11 @@ fun ImportedImageDocumentPreview(
     title: String,
     rotationDegrees: Float,
     backendProcessingState: ScannerBackendProcessingState = ScannerBackendProcessingState.Idle,
+    validationState: ScannerFlowValidationState = ScannerFlowValidationState(),
     onProcessWithBackend: () -> Unit = {},
     onRetryBackendProcessing: () -> Unit = {},
+    onRunValidation: () -> Unit = {},
+    onRetryValidation: () -> Unit = {},
     onBack: () -> Unit,
     onAdd: () -> Unit,
     onEdit: () -> Unit,
@@ -650,6 +656,12 @@ fun ImportedImageDocumentPreview(
                 state = backendProcessingState,
                 onProcessWithBackend = onProcessWithBackend,
                 onRetry = onRetryBackendProcessing
+            )
+
+            ScannerFlowValidationSection(
+                state = validationState,
+                onRunValidation = onRunValidation,
+                onRetryValidation = onRetryValidation
             )
 
             Surface(
@@ -840,6 +852,166 @@ private fun BackendResultLine(
         maxLines = 1,
         overflow = TextOverflow.Ellipsis
     )
+}
+
+@Composable
+private fun ScannerFlowValidationSection(
+    state: ScannerFlowValidationState,
+    onRunValidation: () -> Unit,
+    onRetryValidation: () -> Unit
+) {
+    val active = state.isActive
+    val accentColor = when (state.stage) {
+        ScannerFlowStage.COMPLETED -> Color(0xFF16C89A)
+        ScannerFlowStage.ERROR -> Color(0xFFFF6B6B)
+        else -> Color(0xFF6C8CFF)
+    }
+    val ocrStatusLabel = when (state.ocrStatus) {
+        ScannerOcrStatus.PENDING -> "Pending"
+        ScannerOcrStatus.FETCHING -> "Fetching…"
+        ScannerOcrStatus.AVAILABLE -> "Available"
+        ScannerOcrStatus.EMPTY -> "Empty (backend returned no text)"
+        ScannerOcrStatus.FAILED -> "Failed"
+    }
+
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 4.dp),
+        shape = RoundedCornerShape(8.dp),
+        color = Color(0xFF1B1C20),
+        border = androidx.compose.foundation.BorderStroke(1.dp, accentColor.copy(alpha = 0.45f))
+    ) {
+        Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(3.dp)
+                ) {
+                    Text(
+                        text = "E2E Flow Validation",
+                        style = MaterialTheme.typography.titleSmall,
+                        color = Color.White,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Text(
+                        text = "${state.stage.name.replace('_', ' ')} — ${state.statusMessage}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color(0xFFD6D9DE),
+                        maxLines = 3,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                Spacer(modifier = Modifier.width(10.dp))
+                Button(
+                    enabled = !active,
+                    onClick = if (state.isError) onRetryValidation else onRunValidation,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = accentColor,
+                        disabledContainerColor = Color(0xFF4B4D53)
+                    ),
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
+                ) {
+                    Icon(
+                        imageVector = if (state.isError) Icons.Default.Refresh else Icons.Default.CloudUpload,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                        tint = Color.White
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = if (state.isError) "Retry" else "Run Validation",
+                        color = Color.White,
+                        style = MaterialTheme.typography.labelLarge,
+                        maxLines = 1
+                    )
+                }
+            }
+
+            if (active && state.stage != ScannerFlowStage.IMAGE_SELECTED) {
+                val progress = state.uploadProgress
+                if (progress != null) {
+                    LinearProgressIndicator(
+                        progress = { progress.coerceIn(0f, 1f) },
+                        modifier = Modifier.fillMaxWidth(),
+                        color = accentColor,
+                        trackColor = Color(0xFF3A3C42)
+                    )
+                } else {
+                    LinearProgressIndicator(
+                        modifier = Modifier.fillMaxWidth(),
+                        color = accentColor,
+                        trackColor = Color(0xFF3A3C42)
+                    )
+                }
+            }
+
+            if (state.stage != ScannerFlowStage.IDLE) {
+                Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                    state.documentId?.let { BackendResultLine(label = "Document ID", value = it) }
+                    state.pageId?.let { BackendResultLine(label = "Page ID", value = it) }
+                    state.processJobId?.let { BackendResultLine(label = "Process Job ID", value = it) }
+                    state.processedImageUrl?.let { BackendResultLine(label = "processedImageUrl", value = it) }
+                    BackendResultLine(label = "OCR status", value = ocrStatusLabel)
+                }
+            }
+
+            state.processedImageUrl?.let { url ->
+                AsyncImage(
+                    model = url,
+                    contentDescription = "Processed backend image",
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(150.dp)
+                        .clip(RoundedCornerShape(6.dp))
+                        .background(Color.Black),
+                    contentScale = ContentScale.Fit
+                )
+            }
+
+            state.ocrTextPreview?.takeIf { it.isNotBlank() }?.let { preview ->
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(6.dp),
+                    color = Color(0xFF101114)
+                ) {
+                    Text(
+                        modifier = Modifier.padding(10.dp),
+                        text = preview,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color(0xFFD6D9DE),
+                        maxLines = 6,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+
+            if (state.ocrStatus == ScannerOcrStatus.EMPTY) {
+                Text(
+                    text = "Backend OCR returned no text for this page.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = Color(0xFFF6C85F)
+                )
+            }
+
+            state.failureReason?.let { reason ->
+                Text(
+                    text = "Failure: $reason",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = Color(0xFFFF6B6B),
+                    maxLines = 4,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
+    }
 }
 
 @Composable

@@ -10,6 +10,7 @@ import com.dev.docscannerpdf.network.HealthResponse
 import com.dev.docscannerpdf.network.LinkUploadedImageToPageRequest
 import com.dev.docscannerpdf.network.NetworkClient
 import com.dev.docscannerpdf.network.NetworkResult
+import com.dev.docscannerpdf.network.PageOcrResultDto
 import com.dev.docscannerpdf.network.PdfExportJobResponse
 import com.dev.docscannerpdf.network.ProcessJobStatus
 import com.dev.docscannerpdf.network.ProcessPageRequest
@@ -245,6 +246,20 @@ private class FakeProcessApiService(
                 finalImageRole = "ENHANCED",
                 searchableReady = true,
                 updatedAt = "2026-06-25T12:00:01.000Z"
+            )
+        )
+    }
+
+    override suspend fun getPageOcr(
+        documentId: String,
+        pageId: String
+    ): Response<PageOcrResultDto> {
+        return Response.success(
+            PageOcrResultDto(
+                documentId = documentId,
+                pageId = pageId,
+                text = "Sample OCR text",
+                status = "COMPLETED"
             )
         )
     }
