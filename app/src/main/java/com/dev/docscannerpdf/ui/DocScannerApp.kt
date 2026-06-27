@@ -527,7 +527,7 @@ internal fun DocScannerApp(host: MainActivity) {
                         onShareText = host::shareResultText,
                         onExportTxt = { text -> host.exportResultText(text, "txt") },
                         onExportDoc = { text -> host.exportResultText(text, "doc") },
-                        onPdfPlaceholder = { host.viewModel.showError("PDF export is coming soon.") },
+                        onExportPdf = host::exportSearchablePdf,
                         onRetry = host::runScannerFlowValidation
                     )
                 } else if (previewState != null) {

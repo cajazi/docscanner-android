@@ -55,6 +55,8 @@ import com.dev.docscannerpdf.domain.cloud.CloudSyncRepository
 import com.dev.docscannerpdf.domain.onboarding.OnboardingRepository
 import com.dev.docscannerpdf.domain.security.AppLockRepository
 import com.dev.docscannerpdf.domain.security.AppLockSettings
+import com.dev.docscannerpdf.domain.pdf.PdfExportPageInput
+import com.dev.docscannerpdf.domain.pdf.PdfExportService
 import com.dev.docscannerpdf.domain.pdf.PdfRenderHelper
 import com.dev.docscannerpdf.navigation.canHandleSystemBack
 import com.dev.docscannerpdf.navigation.handleSystemBack
@@ -155,6 +157,7 @@ class MainActivity : FragmentActivity() {
     private var pendingScanIsIdCardScan = false
     private val processDocumentUseCase = ProcessDocumentUseCase()
     private val scannerFlowValidationUseCase = ScannerFlowValidationUseCase()
+    private val pdfExportService by lazy { PdfExportService(applicationContext) }
     internal var imageImportReview by mutableStateOf<PendingImageReview?>(null)
     internal var pendingImageImport by mutableStateOf<PendingImageImport?>(null)
     internal var importedImagePreview by mutableStateOf<PendingImageImport?>(null)
@@ -941,6 +944,48 @@ class MainActivity : FragmentActivity() {
     internal fun exportResultText(text: String, extension: String) {
         val title = importedImagePreview?.title ?: "Document Result"
         exportCleanedText(title = title, text = text, extension = extension)
+    }
+
+    /**
+     * Exports the current document result as a CamScanner-style searchable PDF: the backend
+     * page image (enhanced preferred, processed fallback) is rendered to A4 with [ocrText]
+     * embedded as an invisible, selectable layer. Re-uses the OCR text already on screen —
+     * no OCR is re-run and no backend processing is triggered — and the generated PDF is
+     * persisted through the existing document store so it appears alongside other documents.
+     */
+    internal fun exportSearchablePdf(ocrText: String) {
+        val state = documentResultState
+        if (state == null) {
+            viewModel.showError("No document result is available to export.")
+            return
+        }
+        val resolvedText = ocrText.ifBlank { state.ocrText }?.takeIf { it.isNotBlank() }
+        val pages = listOf(
+            PdfExportPageInput(
+                pageNumber = 1,
+                enhancedImageUrl = state.enhancedImageUrl,
+                processedImageUrl = state.processedImageUrl,
+                ocrText = resolvedText
+            )
+        )
+        val title = importedImagePreview?.title ?: "Searchable PDF"
+
+        lifecycleScope.launch {
+            viewModel.showError("Exporting searchable PDF…")
+            when (val result = pdfExportService.export(pages = pages, fileName = title)) {
+                is PdfExportService.Result.Success -> {
+                    viewModel.saveGeneratedPdfDocument(
+                        title = title,
+                        pageCount = result.pageCount,
+                        pdfUri = Uri.fromFile(result.file),
+                        extractedText = resolvedText
+                    )
+                    viewModel.showError("Searchable PDF exported: ${result.file.name}")
+                }
+                is PdfExportService.Result.Failure ->
+                    viewModel.showError(result.message)
+            }
+        }
     }
 
     internal fun runImportedImageOcr(
