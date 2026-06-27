@@ -19,6 +19,7 @@ import com.dev.docscannerpdf.navigation.handleSystemBack
 import com.dev.docscannerpdf.ui.debug.ApiHealthScreen
 import com.dev.docscannerpdf.ui.library.DocumentLibraryScreen
 import com.dev.docscannerpdf.ui.library.buildDocumentLibraryState
+import com.dev.docscannerpdf.ui.pages.MultiPageDocumentEditorScreen
 import com.dev.docscannerpdf.ui.result.DocumentResultScreen
 import com.dev.docscannerpdf.ui.theme.DocScannerPDFTheme
 import com.dev.docscannerpdf.util.AppConstants
@@ -620,6 +621,21 @@ internal fun DocScannerApp(host: MainActivity) {
                             }
                         },
                         modifier = Modifier.fillMaxSize()
+                    )
+                } else if (host.multiPageEditorState != null) {
+                    val editorState = host.multiPageEditorState!!
+                    MultiPageDocumentEditorScreen(
+                        state = editorState,
+                        onBack = host::closeMultiPageEditor,
+                        onSelectPage = host::editorSelectPage,
+                        onMovePageUp = host::editorMovePageUp,
+                        onMovePageDown = host::editorMovePageDown,
+                        onAddPage = host::editorAddPagePlaceholder,
+                        onDuplicatePage = host::editorDuplicatePage,
+                        onRotatePage = host::editorRotatePage,
+                        onRequestDeletePage = host::editorRequestDeletePage,
+                        onConfirmDeletePage = host::editorConfirmDeletePage,
+                        onCancelDeletePage = host::editorCancelDeletePage
                     )
                 } else if (host.showDocumentLibrary) {
                     val libraryState = buildDocumentLibraryState(
