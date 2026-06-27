@@ -487,6 +487,7 @@ fun ImportedImageDocumentPreview(
     onRetryBackendProcessing: () -> Unit = {},
     onRunValidation: () -> Unit = {},
     onRetryValidation: () -> Unit = {},
+    onOpenResult: () -> Unit = {},
     onBack: () -> Unit,
     onAdd: () -> Unit,
     onEdit: () -> Unit,
@@ -661,7 +662,8 @@ fun ImportedImageDocumentPreview(
             ScannerFlowValidationSection(
                 state = validationState,
                 onRunValidation = onRunValidation,
-                onRetryValidation = onRetryValidation
+                onRetryValidation = onRetryValidation,
+                onOpenResult = onOpenResult
             )
 
             Surface(
@@ -858,7 +860,8 @@ private fun BackendResultLine(
 private fun ScannerFlowValidationSection(
     state: ScannerFlowValidationState,
     onRunValidation: () -> Unit,
-    onRetryValidation: () -> Unit
+    onRetryValidation: () -> Unit,
+    onOpenResult: () -> Unit = {}
 ) {
     val active = state.isActive
     val accentColor = when (state.stage) {
@@ -1009,6 +1012,28 @@ private fun ScannerFlowValidationSection(
                     maxLines = 4,
                     overflow = TextOverflow.Ellipsis
                 )
+            }
+
+            // Offer the unified result screen once the end-to-end flow has completed.
+            if (state.stage == ScannerFlowStage.COMPLETED) {
+                Button(
+                    modifier = Modifier.fillMaxWidth(),
+                    onClick = onOpenResult,
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF16C89A))
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Apps,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                        tint = Color.White
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = "Open Document Result",
+                        color = Color.White,
+                        style = MaterialTheme.typography.labelLarge
+                    )
+                }
             }
         }
     }

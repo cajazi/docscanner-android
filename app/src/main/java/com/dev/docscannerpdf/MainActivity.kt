@@ -77,6 +77,8 @@ import com.dev.docscannerpdf.process.ScannerFlowStage
 import com.dev.docscannerpdf.process.ScannerFlowValidationState
 import com.dev.docscannerpdf.process.ScannerFlowValidationUseCase
 import com.dev.docscannerpdf.process.toScannerBackendProcessingState
+import com.dev.docscannerpdf.ui.result.DocumentResultState
+import com.dev.docscannerpdf.ui.result.toDocumentResultState
 import com.dev.docscannerpdf.ui.DocScannerApp
 import com.dev.docscannerpdf.util.AppConstants
 import com.dev.docscannerpdf.ui.APP_PIN_LENGTH
@@ -160,6 +162,7 @@ class MainActivity : FragmentActivity() {
         ScannerBackendProcessingState.Idle
     )
     internal var scannerFlowValidationState by mutableStateOf(ScannerFlowValidationState())
+    internal var documentResultState by mutableStateOf<DocumentResultState?>(null)
     internal var imageEditorMessage by mutableStateOf<String?>(null)
     internal var showSignaturePad by mutableStateOf(false)
     internal var signatureTargetUri by mutableStateOf<Uri?>(null)
@@ -230,6 +233,7 @@ class MainActivity : FragmentActivity() {
                 imageEditorMessage = null
                 scannerBackendProcessingState = ScannerBackendProcessingState.Idle
                 scannerFlowValidationState = ScannerFlowValidationState()
+                documentResultState = null
                 importedImagePreview = PendingImageImport(
                     imageUri = previewPageUri,
                     title = "$pendingScanTitlePrefix ${SimpleDateFormat("dd-MM-yyyy HH.mm", Locale.getDefault()).format(Date())}"
@@ -766,6 +770,7 @@ class MainActivity : FragmentActivity() {
         importedImagePreview = null
         scannerBackendProcessingState = ScannerBackendProcessingState.Idle
         scannerFlowValidationState = ScannerFlowValidationState()
+        documentResultState = null
         imageEditorMessage = null
     }
 
@@ -817,6 +822,7 @@ class MainActivity : FragmentActivity() {
             pendingImageImport = null
             scannerBackendProcessingState = ScannerBackendProcessingState.Idle
             scannerFlowValidationState = ScannerFlowValidationState()
+            documentResultState = null
             importedImagePreview = finalState
         }
     }
@@ -878,14 +884,63 @@ class MainActivity : FragmentActivity() {
             return
         }
 
+        val localPreviewUri = preview.imageUri.toString()
         lifecycleScope.launch {
             scannerFlowValidationUseCase.validate(
                 context = this@MainActivity,
                 imageUri = preview.imageUri,
                 title = preview.title,
-                onState = { state -> scannerFlowValidationState = state }
+                onState = { state ->
+                    scannerFlowValidationState = state
+                    // Keep the unified result screen live while it is open (e.g. on retry).
+                    if (documentResultState != null) {
+                        documentResultState = state.toDocumentResultState(localPreviewUri)
+                    }
+                }
             )
         }
+    }
+
+    /**
+     * Opens the unified [DocumentResultScreen] as the production destination, seeded from
+     * the current end-to-end validation state plus the on-device preview as a fallback image.
+     */
+    internal fun openDocumentResult() {
+        val preview = importedImagePreview
+        documentResultState = scannerFlowValidationState.toDocumentResultState(
+            localPreviewUri = preview?.imageUri?.toString()
+        )
+    }
+
+    internal fun closeDocumentResult() {
+        documentResultState = null
+    }
+
+    /**
+     * Persists edited OCR text through the existing persistence path when this result maps
+     * to a locally-saved document; otherwise updates the in-memory result so edits are not lost.
+     */
+    internal fun saveResultOcrText(text: String) {
+        documentResultState = documentResultState?.copy(ocrText = text.ifBlank { null })
+        val localUri = documentResultState?.localPreviewUri
+        val match = localUri?.let { uri ->
+            viewModel.uiState.value.documents.firstOrNull { it.localPdfUri == uri }
+        }
+        if (match != null) {
+            viewModel.updateDocumentOcrText(match, text)
+        } else {
+            viewModel.showError("OCR text saved for this result.")
+        }
+    }
+
+    internal fun shareResultText(text: String) {
+        val title = importedImagePreview?.title ?: "Document Result"
+        shareCleanedText(title = title, text = text)
+    }
+
+    internal fun exportResultText(text: String, extension: String) {
+        val title = importedImagePreview?.title ?: "Document Result"
+        exportCleanedText(title = title, text = text, extension = extension)
     }
 
     internal fun runImportedImageOcr(
