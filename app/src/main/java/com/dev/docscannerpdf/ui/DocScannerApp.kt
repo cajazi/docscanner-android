@@ -17,6 +17,7 @@ import com.dev.docscannerpdf.domain.backup.BackupRepository
 import com.dev.docscannerpdf.navigation.canHandleSystemBack
 import com.dev.docscannerpdf.navigation.handleSystemBack
 import com.dev.docscannerpdf.ui.debug.ApiHealthScreen
+import com.dev.docscannerpdf.ui.result.DocumentResultScreen
 import com.dev.docscannerpdf.ui.theme.DocScannerPDFTheme
 import com.dev.docscannerpdf.util.AppConstants
 import com.google.mlkit.vision.documentscanner.GmsDocumentScannerOptions
@@ -516,6 +517,19 @@ internal fun DocScannerApp(host: MainActivity) {
                             }
                         })
                     }
+                } else if (host.documentResultState != null) {
+                    val resultState = host.documentResultState!!
+                    DocumentResultScreen(
+                        state = resultState,
+                        onBack = host::closeDocumentResult,
+                        onSaveOcrText = host::saveResultOcrText,
+                        onCopyTextConfirmed = { host.viewModel.showError("Text copied.") },
+                        onShareText = host::shareResultText,
+                        onExportTxt = { text -> host.exportResultText(text, "txt") },
+                        onExportDoc = { text -> host.exportResultText(text, "doc") },
+                        onPdfPlaceholder = { host.viewModel.showError("PDF export is coming soon.") },
+                        onRetry = host::runScannerFlowValidation
+                    )
                 } else if (previewState != null) {
                     ImportedImageDocumentPreview(
                         imageUri = previewState.imageUri,
@@ -527,6 +541,7 @@ internal fun DocScannerApp(host: MainActivity) {
                         onRetryBackendProcessing = host::processImportedPreviewWithBackend,
                         onRunValidation = host::runScannerFlowValidation,
                         onRetryValidation = host::runScannerFlowValidation,
+                        onOpenResult = host::openDocumentResult,
                         onBack = { host.importedImagePreview = null },
                         onAdd = { host.imageImportLauncher.launch("image/*") },
                         onEdit = {
