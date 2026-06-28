@@ -1,5 +1,7 @@
 package com.dev.docscannerpdf.domain.pdf
 
+import com.dev.docscannerpdf.domain.annotation.Annotation
+
 /**
  * Image role a searchable-PDF page is rendered from. The export prefers the backend
  * [ENHANCED] image and falls back to the [PROCESSED] image, mirroring the CamScanner-style
@@ -17,7 +19,8 @@ data class PdfExportPageInput(
     val pageNumber: Int,
     val enhancedImageUrl: String? = null,
     val processedImageUrl: String? = null,
-    val ocrText: String? = null
+    val ocrText: String? = null,
+    val annotations: List<Annotation> = emptyList()
 )
 
 /**
@@ -28,7 +31,8 @@ data class PdfExportPagePlan(
     val pageNumber: Int,
     val imageUrl: String,
     val imageSource: PdfExportImageSource,
-    val ocrText: String?
+    val ocrText: String?,
+    val annotations: List<Annotation> = emptyList()
 ) {
     /** True when this page will receive an invisible, selectable OCR text layer. */
     val hasSearchableText: Boolean
@@ -84,7 +88,8 @@ object PdfExportPlanner {
                 pageNumber = page.pageNumber,
                 imageUrl = image.first,
                 imageSource = image.second,
-                ocrText = page.ocrText?.takeIf { it.isNotBlank() }
+                ocrText = page.ocrText?.takeIf { it.isNotBlank() },
+                annotations = page.annotations
             )
         }
         return PdfExportPlan.Ready(resolved)

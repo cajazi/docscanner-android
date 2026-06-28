@@ -7,6 +7,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
@@ -522,6 +523,9 @@ internal fun DocScannerApp(host: MainActivity) {
                     }
                 } else if (host.documentResultState != null) {
                     val resultState = host.documentResultState!!
+                    LaunchedEffect(resultState.documentId, resultState.pageId) {
+                        host.beginAnnotationSession(resultState)
+                    }
                     DocumentResultScreen(
                         state = resultState,
                         onBack = host::closeDocumentResult,
@@ -531,7 +535,13 @@ internal fun DocScannerApp(host: MainActivity) {
                         onExportTxt = { text -> host.exportResultText(text, "txt") },
                         onExportDoc = { text -> host.exportResultText(text, "doc") },
                         onExportPdf = host::exportSearchablePdf,
-                        onRetry = host::runScannerFlowValidation
+                        onRetry = host::runScannerFlowValidation,
+                        annotationState = host.annotationEditor,
+                        onToggleAnnotateMode = host::toggleAnnotationMode,
+                        onSelectAnnotationTool = host::selectAnnotationTool,
+                        onAddAnnotationStroke = host::addAnnotationStroke,
+                        onUndoAnnotation = host::undoAnnotation,
+                        onRedoAnnotation = host::redoAnnotation
                     )
                 } else if (previewState != null) {
                     ImportedImageDocumentPreview(

@@ -55,6 +55,12 @@ import com.dev.docscannerpdf.domain.cloud.CloudSyncRepository
 import com.dev.docscannerpdf.domain.onboarding.OnboardingRepository
 import com.dev.docscannerpdf.domain.security.AppLockRepository
 import com.dev.docscannerpdf.domain.security.AppLockSettings
+import com.dev.docscannerpdf.domain.annotation.AnnotationEditorReducer
+import com.dev.docscannerpdf.domain.annotation.AnnotationEditorState
+import com.dev.docscannerpdf.domain.annotation.AnnotationRepository
+import com.dev.docscannerpdf.domain.annotation.AnnotationStroke
+import com.dev.docscannerpdf.domain.annotation.AnnotationTool
+import com.dev.docscannerpdf.domain.annotation.PageAnnotationState
 import com.dev.docscannerpdf.domain.pdf.PdfExportPageInput
 import com.dev.docscannerpdf.domain.pdf.PdfExportService
 import com.dev.docscannerpdf.domain.pdf.PdfRenderHelper
@@ -165,6 +171,9 @@ class MainActivity : FragmentActivity() {
     private val processDocumentUseCase = ProcessDocumentUseCase()
     private val scannerFlowValidationUseCase = ScannerFlowValidationUseCase()
     private val pdfExportService by lazy { PdfExportService(applicationContext) }
+    private val annotationRepository by lazy {
+        AnnotationRepository(File(filesDir, "annotations"))
+    }
     internal var imageImportReview by mutableStateOf<PendingImageReview?>(null)
     internal var pendingImageImport by mutableStateOf<PendingImageImport?>(null)
     internal var importedImagePreview by mutableStateOf<PendingImageImport?>(null)
@@ -184,6 +193,7 @@ class MainActivity : FragmentActivity() {
     internal var libraryPendingRename by mutableStateOf<DocumentEntity?>(null)
     internal var libraryPendingDelete by mutableStateOf<DocumentEntity?>(null)
     internal var multiPageEditorState by mutableStateOf<MultiPageEditorState?>(null)
+    internal var annotationEditor by mutableStateOf<AnnotationEditorState?>(null)
     internal var pdfToolsMessage by mutableStateOf<String?>(null)
     internal var pdfViewerDocument by mutableStateOf<DocumentEntity?>(null)
     internal var viewerDocumentPendingDelete by mutableStateOf<DocumentEntity?>(null)
@@ -929,8 +939,64 @@ class MainActivity : FragmentActivity() {
     }
 
     internal fun closeDocumentResult() {
+        persistCurrentAnnotations()
+        annotationEditor = null
         documentResultState = null
     }
+
+    // ---- Annotations (local-first; persisted as a per-document JSON blob) ----
+
+    private fun annotationDocId(state: DocumentResultState?): String =
+        state?.documentId ?: state?.localPreviewUri ?: "unknown"
+
+    private fun annotationPageId(state: DocumentResultState?): String =
+        state?.pageId ?: "page-1"
+
+    /**
+     * Loads any persisted annotations for the open result's page into an editor session.
+     * Guarded so it only loads once per page — re-entering the same page never discards
+     * in-progress edits (mode switching keeps the session intact).
+     */
+    internal fun beginAnnotationSession(state: DocumentResultState) {
+        val pageId = annotationPageId(state)
+        if (annotationEditor?.page?.pageId == pageId) return
+        val stored = annotationRepository.loadPage(annotationDocId(state), pageId)
+        annotationEditor = AnnotationEditorState(
+            page = PageAnnotationState(pageId = pageId, annotations = stored)
+        )
+    }
+
+    private fun persistCurrentAnnotations() {
+        val editor = annotationEditor ?: return
+        val docId = annotationDocId(documentResultState)
+        val page = editor.page
+        lifecycleScope.launch(Dispatchers.IO) {
+            annotationRepository.savePage(docId, page.pageId, page.annotations)
+        }
+    }
+
+    private fun updateAnnotationEditor(
+        persist: Boolean = true,
+        transform: (AnnotationEditorState) -> AnnotationEditorState
+    ) {
+        annotationEditor = annotationEditor?.let(transform)
+        if (persist) persistCurrentAnnotations()
+    }
+
+    internal fun toggleAnnotationMode() =
+        updateAnnotationEditor(persist = false) { AnnotationEditorReducer.toggleMode(it) }
+
+    internal fun selectAnnotationTool(tool: AnnotationTool) =
+        updateAnnotationEditor(persist = false) { AnnotationEditorReducer.setTool(it, tool) }
+
+    internal fun addAnnotationStroke(stroke: AnnotationStroke) =
+        updateAnnotationEditor { AnnotationEditorReducer.addAnnotation(it, stroke) }
+
+    internal fun undoAnnotation() =
+        updateAnnotationEditor { AnnotationEditorReducer.undo(it) }
+
+    internal fun redoAnnotation() =
+        updateAnnotationEditor { AnnotationEditorReducer.redo(it) }
 
     /** Opens the local-first document library; documents load from Room with no backend calls. */
     internal fun openDocumentLibrary() {
@@ -1044,12 +1110,16 @@ class MainActivity : FragmentActivity() {
             return
         }
         val resolvedText = ocrText.ifBlank { state.ocrText }?.takeIf { it.isNotBlank() }
+        // Prefer the live editor session; fall back to persisted annotations for this page.
+        val annotations = annotationEditor?.page?.annotations
+            ?: annotationRepository.loadPage(annotationDocId(state), annotationPageId(state))
         val pages = listOf(
             PdfExportPageInput(
                 pageNumber = 1,
                 enhancedImageUrl = state.enhancedImageUrl,
                 processedImageUrl = state.processedImageUrl,
-                ocrText = resolvedText
+                ocrText = resolvedText,
+                annotations = annotations
             )
         )
         val title = importedImagePreview?.title ?: "Searchable PDF"

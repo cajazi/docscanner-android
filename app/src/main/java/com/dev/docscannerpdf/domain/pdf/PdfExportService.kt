@@ -6,9 +6,14 @@ import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
+import android.graphics.Path
 import android.graphics.pdf.PdfDocument
 import android.net.Uri
 import androidx.core.content.FileProvider
+import com.dev.docscannerpdf.domain.annotation.Annotation
+import com.dev.docscannerpdf.domain.annotation.AnnotationStroke
+import com.dev.docscannerpdf.domain.annotation.AnnotationText
+import com.dev.docscannerpdf.domain.annotation.AnnotationType
 import com.dev.docscannerpdf.network.NetworkClient
 import com.dev.docscannerpdf.util.AppConstants
 import kotlinx.coroutines.Dispatchers
@@ -78,6 +83,9 @@ class PdfExportService(
                     val pdfPage = pdfDocument.startPage(pageInfo)
                     drawImageOnA4Page(pdfPage.canvas, bitmap)
                     page.ocrText?.let { drawInvisibleTextLayer(pdfPage.canvas, it) }
+                    if (page.annotations.isNotEmpty()) {
+                        drawAnnotationOverlay(pdfPage.canvas, page.annotations)
+                    }
                     pdfDocument.finishPage(pdfPage)
                 } finally {
                     bitmap.recycle()
@@ -134,6 +142,68 @@ class PdfExportService(
             canvas.drawText(line, margin, y, paint)
             y += lineHeight
         }
+    }
+
+    /**
+     * Renders annotations on top of the page. Coordinates are normalized (0f..1f) against the
+     * page, so they map onto the A4 canvas directly. Highlight strokes draw translucent and
+     * thicker; pen strokes draw solid; text notes draw at their anchor point.
+     */
+    private fun drawAnnotationOverlay(canvas: Canvas, annotations: List<Annotation>) {
+        val pageWidth = AppConstants.A4_WIDTH_POINTS.toFloat()
+        val pageHeight = AppConstants.A4_HEIGHT_POINTS.toFloat()
+        annotations.forEach { annotation ->
+            when (annotation) {
+                is AnnotationStroke -> drawStroke(canvas, annotation, pageWidth, pageHeight)
+                is AnnotationText -> drawText(canvas, annotation, pageWidth, pageHeight)
+            }
+        }
+    }
+
+    private fun drawStroke(
+        canvas: Canvas,
+        stroke: AnnotationStroke,
+        pageWidth: Float,
+        pageHeight: Float
+    ) {
+        if (stroke.points.size < 2) return
+        val highlight = stroke.type == AnnotationType.HIGHLIGHT
+        val paint = Paint().apply {
+            isAntiAlias = true
+            style = Paint.Style.STROKE
+            strokeCap = Paint.Cap.ROUND
+            strokeJoin = Paint.Join.ROUND
+            color = stroke.color.toInt()
+            strokeWidth = stroke.thickness * if (highlight) 3.5f else 1f
+            if (highlight) alpha = 90
+        }
+        val path = Path().apply {
+            val first = stroke.points.first()
+            moveTo(first.x * pageWidth, first.y * pageHeight)
+            for (i in 1 until stroke.points.size) {
+                lineTo(stroke.points[i].x * pageWidth, stroke.points[i].y * pageHeight)
+            }
+        }
+        canvas.drawPath(path, paint)
+    }
+
+    private fun drawText(
+        canvas: Canvas,
+        text: AnnotationText,
+        pageWidth: Float,
+        pageHeight: Float
+    ) {
+        val paint = Paint().apply {
+            isAntiAlias = true
+            color = text.color.toInt()
+            textSize = text.fontSize
+        }
+        canvas.drawText(
+            text.value,
+            text.position.x * pageWidth,
+            text.position.y * pageHeight,
+            paint
+        )
     }
 
     private fun fileProviderUri(file: File): Uri? {
