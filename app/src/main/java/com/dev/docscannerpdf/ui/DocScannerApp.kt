@@ -552,7 +552,8 @@ internal fun DocScannerApp(host: MainActivity) {
                         onAddAnnotationStroke = host::addAnnotationStroke,
                         onUndoAnnotation = host::undoAnnotation,
                         onRedoAnnotation = host::redoAnnotation,
-                        onEditCrop = host::openCropEditor
+                        onEditCrop = host::openCropEditor,
+                        overlayAnnotations = host.displayAnnotations()
                     )
                 } else if (previewState != null) {
                     ImportedImageDocumentPreview(

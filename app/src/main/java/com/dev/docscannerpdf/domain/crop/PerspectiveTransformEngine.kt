@@ -58,4 +58,12 @@ object PerspectiveTransformEngine {
     }
 
     private fun distance(a: CropPoint, b: CropPoint): Float = hypot(a.x - b.x, a.y - b.y)
+
+    /**
+     * Exposes the quad-to-quad homography directly so the same warp the crop applies to the
+     * image can be reused to project other layers (e.g. annotations) through the identical
+     * transform. Corners are paired in TL/TR/BR/BL order.
+     */
+    fun quadToQuadMatrix(source: PerspectiveQuad, target: PerspectiveQuad): Matrix3x3 =
+        WarpMatrixCalculator.computeHomography(source.corners(), target.corners())
 }

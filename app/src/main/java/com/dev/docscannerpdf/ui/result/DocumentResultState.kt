@@ -59,6 +59,19 @@ data class DocumentResultState(
             localPreviewUri
         ).firstOrNull { !it.isNullOrBlank() }
 
+    /**
+     * The image to crop from, ignoring any applied crop override. Cropping always starts from
+     * this base so repeated crops adjust the same region rather than stacking transforms.
+     */
+    val baseImageModel: String?
+        get() = listOf(
+            processedImageUrl,
+            enhancedImageUrl,
+            croppedImageUrl,
+            originalImageUrl,
+            localPreviewUri
+        ).firstOrNull { !it.isNullOrBlank() }
+
     val hasOcrText: Boolean
         get() = !ocrText.isNullOrBlank()
 

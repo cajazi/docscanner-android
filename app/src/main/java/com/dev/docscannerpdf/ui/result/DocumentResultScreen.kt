@@ -62,6 +62,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.clickable
 import coil.compose.AsyncImage
+import com.dev.docscannerpdf.domain.annotation.Annotation
 import com.dev.docscannerpdf.domain.annotation.AnnotationEditorState
 import com.dev.docscannerpdf.domain.annotation.AnnotationStroke
 import com.dev.docscannerpdf.domain.annotation.AnnotationTool
@@ -98,7 +99,8 @@ fun DocumentResultScreen(
     onAddAnnotationStroke: (AnnotationStroke) -> Unit = {},
     onUndoAnnotation: () -> Unit = {},
     onRedoAnnotation: () -> Unit = {},
-    onEditCrop: () -> Unit = {}
+    onEditCrop: () -> Unit = {},
+    overlayAnnotations: List<Annotation> = emptyList()
 ) {
     val clipboardManager = LocalClipboardManager.current
     // Reseed the editor whenever the backend OCR text changes (e.g. after a retry),
@@ -152,7 +154,8 @@ fun DocumentResultScreen(
                 onAddAnnotationStroke = onAddAnnotationStroke,
                 onUndoAnnotation = onUndoAnnotation,
                 onRedoAnnotation = onRedoAnnotation,
-                onEditCrop = onEditCrop
+                onEditCrop = onEditCrop,
+                overlayAnnotations = overlayAnnotations
             )
             ResultOcrSection(
                 state = state,
@@ -256,7 +259,8 @@ private fun ResultImageSection(
     onAddAnnotationStroke: (AnnotationStroke) -> Unit,
     onUndoAnnotation: () -> Unit,
     onRedoAnnotation: () -> Unit,
-    onEditCrop: () -> Unit
+    onEditCrop: () -> Unit,
+    overlayAnnotations: List<Annotation>
 ) {
     val model = state.preferredImageModel
     val annotationsAvailable = annotationState != null && !model.isNullOrBlank()
@@ -332,7 +336,7 @@ private fun ResultImageSection(
                     )
                     if (annotationState != null) {
                         AnnotationCanvasOverlay(
-                            annotations = annotationState.page.annotations,
+                            annotations = overlayAnnotations,
                             tool = annotationState.tool,
                             enabled = annotationState.isAnnotating,
                             strokeColor = toolColor(annotationState.tool),
