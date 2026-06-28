@@ -198,6 +198,7 @@ class MainActivity : FragmentActivity() {
     internal var signatureTargetUri by mutableStateOf<Uri?>(null)
     internal var showPdfTools by mutableStateOf(false)
     internal var showAiTools by mutableStateOf(false)
+    internal var showLiveScanner by mutableStateOf(false)
     internal var showDocumentLibrary by mutableStateOf(false)
     internal var documentLibraryQuery by mutableStateOf("")
     internal var documentLibrarySort by mutableStateOf(DocumentLibrarySort.NEWEST)
@@ -1135,6 +1136,20 @@ class MainActivity : FragmentActivity() {
             cancelCropEditor()
             viewModel.showError("Crop applied.")
         }
+    }
+
+    /** Opens the live CameraX detection screen. */
+    internal fun openLiveScanner() {
+        showAiTools = false
+        showLiveScanner = true
+    }
+
+    /**
+     * Auto-capture signal from the live detection loop. Per this slice it is an event only — it
+     * does not trigger a shutter; it just records that a stable document was detected.
+     */
+    internal fun onLiveCaptureReady() {
+        Log.d(TAG, "Live auto-capture signal: stable document detected.")
     }
 
     /** Opens the local-first document library; documents load from Room with no backend calls. */

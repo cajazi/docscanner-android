@@ -41,6 +41,7 @@ internal fun MainActivity.currentScreen(): MainScreen {
         showImagesToPdf -> MainScreen.ImagesToPdf
         showCompressPdf -> MainScreen.CompressPdf
         showPdfTools -> MainScreen.PdfTools
+        showLiveScanner -> MainScreen.LiveScanner
         cropState != null -> MainScreen.CropEditor
         multiPageEditorState != null -> MainScreen.MultiPageEditor
         showDocumentLibrary -> MainScreen.DocumentLibrary
@@ -81,6 +82,7 @@ internal fun MainActivity.handleSystemBack() {
         showSplitPdf -> closeSplitPdf()
         showImagesToPdf -> closeImagesToPdf()
         showCompressPdf -> closeCompressPdf()
+        showLiveScanner -> showLiveScanner = false
         showAiTools -> showAiTools = false
         showPdfTools -> showPdfTools = false
         // The crop editor sits on top of the result screen; back cancels it first.
