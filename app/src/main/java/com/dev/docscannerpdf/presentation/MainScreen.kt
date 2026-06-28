@@ -25,6 +25,7 @@ enum class MainScreen {
     PdfTools,
     DocumentLibrary,
     MultiPageEditor,
+    CropEditor,
     ImageImportReview,
     ImageEditor,
     ImportedImagePreview
