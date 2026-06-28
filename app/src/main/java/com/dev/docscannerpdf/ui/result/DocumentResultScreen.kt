@@ -24,6 +24,7 @@ import androidx.compose.material.icons.automirrored.filled.Redo
 import androidx.compose.material.icons.automirrored.filled.TextSnippet
 import androidx.compose.material.icons.automirrored.filled.Undo
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Crop
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.PictureAsPdf
@@ -96,7 +97,8 @@ fun DocumentResultScreen(
     onSelectAnnotationTool: (AnnotationTool) -> Unit = {},
     onAddAnnotationStroke: (AnnotationStroke) -> Unit = {},
     onUndoAnnotation: () -> Unit = {},
-    onRedoAnnotation: () -> Unit = {}
+    onRedoAnnotation: () -> Unit = {},
+    onEditCrop: () -> Unit = {}
 ) {
     val clipboardManager = LocalClipboardManager.current
     // Reseed the editor whenever the backend OCR text changes (e.g. after a retry),
@@ -149,7 +151,8 @@ fun DocumentResultScreen(
                 onSelectAnnotationTool = onSelectAnnotationTool,
                 onAddAnnotationStroke = onAddAnnotationStroke,
                 onUndoAnnotation = onUndoAnnotation,
-                onRedoAnnotation = onRedoAnnotation
+                onRedoAnnotation = onRedoAnnotation,
+                onEditCrop = onEditCrop
             )
             ResultOcrSection(
                 state = state,
@@ -252,7 +255,8 @@ private fun ResultImageSection(
     onSelectAnnotationTool: (AnnotationTool) -> Unit,
     onAddAnnotationStroke: (AnnotationStroke) -> Unit,
     onUndoAnnotation: () -> Unit,
-    onRedoAnnotation: () -> Unit
+    onRedoAnnotation: () -> Unit,
+    onEditCrop: () -> Unit
 ) {
     val model = state.preferredImageModel
     val annotationsAvailable = annotationState != null && !model.isNullOrBlank()
@@ -277,11 +281,22 @@ private fun ResultImageSection(
                     color = Color.White,
                     fontWeight = FontWeight.SemiBold
                 )
-                if (annotationsAvailable) {
-                    TextButton(onClick = onToggleAnnotateMode) {
-                        Icon(Icons.Default.Edit, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(Modifier.width(6.dp))
-                        Text(if (annotating) "Done" else "Annotate")
+                if (!model.isNullOrBlank()) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        if (!annotating) {
+                            TextButton(onClick = onEditCrop) {
+                                Icon(Icons.Default.Crop, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(Modifier.width(6.dp))
+                                Text("Crop")
+                            }
+                        }
+                        if (annotationsAvailable) {
+                            TextButton(onClick = onToggleAnnotateMode) {
+                                Icon(Icons.Default.Edit, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(Modifier.width(6.dp))
+                                Text(if (annotating) "Done" else "Annotate")
+                            }
+                        }
                     }
                 }
             }

@@ -94,6 +94,10 @@ import com.dev.docscannerpdf.ui.pages.MultiPageEditorReducer
 import com.dev.docscannerpdf.ui.pages.MultiPageEditorState
 import com.dev.docscannerpdf.ui.pages.shouldOpenMultiPageEditor
 import com.dev.docscannerpdf.ui.pages.toMultiPageEditorState
+import com.dev.docscannerpdf.domain.crop.CropCorner
+import com.dev.docscannerpdf.domain.crop.CropReducer
+import com.dev.docscannerpdf.domain.crop.CropState
+import com.dev.docscannerpdf.ui.crop.CropImageProcessor
 import com.dev.docscannerpdf.ui.DocScannerApp
 import com.dev.docscannerpdf.util.AppConstants
 import com.dev.docscannerpdf.ui.APP_PIN_LENGTH
@@ -174,6 +178,7 @@ class MainActivity : FragmentActivity() {
     private val annotationRepository by lazy {
         AnnotationRepository(File(filesDir, "annotations"))
     }
+    private val cropImageProcessor by lazy { CropImageProcessor(applicationContext) }
     internal var imageImportReview by mutableStateOf<PendingImageReview?>(null)
     internal var pendingImageImport by mutableStateOf<PendingImageImport?>(null)
     internal var importedImagePreview by mutableStateOf<PendingImageImport?>(null)
@@ -194,6 +199,8 @@ class MainActivity : FragmentActivity() {
     internal var libraryPendingDelete by mutableStateOf<DocumentEntity?>(null)
     internal var multiPageEditorState by mutableStateOf<MultiPageEditorState?>(null)
     internal var annotationEditor by mutableStateOf<AnnotationEditorState?>(null)
+    internal var cropState by mutableStateOf<CropState?>(null)
+    internal var cropSourceBitmap by mutableStateOf<android.graphics.Bitmap?>(null)
     internal var pdfToolsMessage by mutableStateOf<String?>(null)
     internal var pdfViewerDocument by mutableStateOf<DocumentEntity?>(null)
     internal var viewerDocumentPendingDelete by mutableStateOf<DocumentEntity?>(null)
@@ -941,6 +948,7 @@ class MainActivity : FragmentActivity() {
     internal fun closeDocumentResult() {
         persistCurrentAnnotations()
         annotationEditor = null
+        cancelCropEditor()
         documentResultState = null
     }
 
@@ -997,6 +1005,76 @@ class MainActivity : FragmentActivity() {
 
     internal fun redoAnnotation() =
         updateAnnotationEditor { AnnotationEditorReducer.redo(it) }
+
+    // ---- Smart crop / perspective correction (local-first) ----
+
+    /**
+     * Opens the crop editor for the current result's displayed image. The source bitmap loads
+     * asynchronously; the warp on apply produces a new local file and overrides the displayed
+     * image — OCR text and annotations are left untouched.
+     */
+    internal fun openCropEditor() {
+        val source = documentResultState?.preferredImageModel
+        if (source.isNullOrBlank()) {
+            viewModel.showError("No image is available to crop.")
+            return
+        }
+        cropSourceBitmap = null
+        cropState = CropState(sourceImageUri = source, mode = com.dev.docscannerpdf.domain.crop.CropMode.EDITING)
+        lifecycleScope.launch {
+            val bitmap = cropImageProcessor.loadSource(source)
+            if (bitmap == null) {
+                cropState = null
+                viewModel.showError("Unable to load the image for cropping.")
+            } else {
+                cropSourceBitmap = bitmap
+            }
+        }
+    }
+
+    internal fun cancelCropEditor() {
+        cropState = null
+        cropSourceBitmap = null
+    }
+
+    internal fun cropMoveCorner(corner: CropCorner, x: Float, y: Float) {
+        cropState = cropState?.let { CropReducer.moveCorner(it, corner, x, y) }
+    }
+
+    internal fun cropResetQuad() {
+        cropState = cropState?.let { CropReducer.resetQuad(it) }
+    }
+
+    /**
+     * Applies the crop: validates + auto-fixes the quad, warps the source bitmap to a new local
+     * file, and overrides the result's displayed/exported image with it. OCR and annotations are
+     * preserved; only the image changes.
+     */
+    internal fun cropApply() {
+        val current = cropState ?: return
+        val bitmap = cropSourceBitmap
+        if (bitmap == null) {
+            viewModel.showError("Image is still loading.")
+            return
+        }
+        val applying = CropReducer.applyCrop(current)
+        if (!applying.isApplying) {
+            viewModel.showError("Adjust the corners into a valid shape before applying.")
+            return
+        }
+        cropState = applying
+        lifecycleScope.launch {
+            val croppedUri = cropImageProcessor.warpAndSave(bitmap, applying.quad)
+            if (croppedUri == null) {
+                cropState = current.copy(mode = com.dev.docscannerpdf.domain.crop.CropMode.EDITING)
+                viewModel.showError("Unable to apply crop.")
+                return@launch
+            }
+            documentResultState = documentResultState?.copy(localCroppedUri = croppedUri.toString())
+            cancelCropEditor()
+            viewModel.showError("Crop applied.")
+        }
+    }
 
     /** Opens the local-first document library; documents load from Room with no backend calls. */
     internal fun openDocumentLibrary() {
@@ -1113,11 +1191,13 @@ class MainActivity : FragmentActivity() {
         // Prefer the live editor session; fall back to persisted annotations for this page.
         val annotations = annotationEditor?.page?.annotations
             ?: annotationRepository.loadPage(annotationDocId(state), annotationPageId(state))
+        // A locally applied crop overrides the backend image for export, too.
+        val croppedImage = state.localCroppedUri
         val pages = listOf(
             PdfExportPageInput(
                 pageNumber = 1,
-                enhancedImageUrl = state.enhancedImageUrl,
-                processedImageUrl = state.processedImageUrl,
+                enhancedImageUrl = if (croppedImage.isNullOrBlank()) state.enhancedImageUrl else null,
+                processedImageUrl = croppedImage ?: state.processedImageUrl,
                 ocrText = resolvedText,
                 annotations = annotations
             )

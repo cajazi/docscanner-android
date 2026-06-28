@@ -18,6 +18,7 @@ import com.dev.docscannerpdf.domain.backup.BackupRepository
 import com.dev.docscannerpdf.navigation.canHandleSystemBack
 import com.dev.docscannerpdf.navigation.handleSystemBack
 import com.dev.docscannerpdf.ui.debug.ApiHealthScreen
+import com.dev.docscannerpdf.ui.crop.CropEditorScreen
 import com.dev.docscannerpdf.ui.library.DocumentLibraryScreen
 import com.dev.docscannerpdf.ui.library.buildDocumentLibraryState
 import com.dev.docscannerpdf.ui.pages.MultiPageDocumentEditorScreen
@@ -521,6 +522,15 @@ internal fun DocScannerApp(host: MainActivity) {
                             }
                         })
                     }
+                } else if (host.cropState != null) {
+                    CropEditorScreen(
+                        state = host.cropState!!,
+                        sourceBitmap = host.cropSourceBitmap,
+                        onMoveCorner = host::cropMoveCorner,
+                        onReset = host::cropResetQuad,
+                        onApply = host::cropApply,
+                        onCancel = host::cancelCropEditor
+                    )
                 } else if (host.documentResultState != null) {
                     val resultState = host.documentResultState!!
                     LaunchedEffect(resultState.documentId, resultState.pageId) {
@@ -541,7 +551,8 @@ internal fun DocScannerApp(host: MainActivity) {
                         onSelectAnnotationTool = host::selectAnnotationTool,
                         onAddAnnotationStroke = host::addAnnotationStroke,
                         onUndoAnnotation = host::undoAnnotation,
-                        onRedoAnnotation = host::redoAnnotation
+                        onRedoAnnotation = host::redoAnnotation,
+                        onEditCrop = host::openCropEditor
                     )
                 } else if (previewState != null) {
                     ImportedImageDocumentPreview(

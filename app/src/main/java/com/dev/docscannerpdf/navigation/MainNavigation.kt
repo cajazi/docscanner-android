@@ -41,6 +41,7 @@ internal fun MainActivity.currentScreen(): MainScreen {
         showImagesToPdf -> MainScreen.ImagesToPdf
         showCompressPdf -> MainScreen.CompressPdf
         showPdfTools -> MainScreen.PdfTools
+        cropState != null -> MainScreen.CropEditor
         multiPageEditorState != null -> MainScreen.MultiPageEditor
         showDocumentLibrary -> MainScreen.DocumentLibrary
         imageImportReview != null -> MainScreen.ImageImportReview
@@ -82,6 +83,8 @@ internal fun MainActivity.handleSystemBack() {
         showCompressPdf -> closeCompressPdf()
         showAiTools -> showAiTools = false
         showPdfTools -> showPdfTools = false
+        // The crop editor sits on top of the result screen; back cancels it first.
+        cropState != null -> cancelCropEditor()
         // The multi-page editor backs out to its launch point (e.g. the library) first.
         multiPageEditorState != null -> closeMultiPageEditor()
         // While the library is open, a document opened into the result screen backs out to

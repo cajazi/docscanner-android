@@ -35,6 +35,9 @@ data class DocumentResultState(
     val enhancedImageUrl: String? = null,
     val processedImageUrl: String? = null,
     val localPreviewUri: String? = null,
+    // A locally warped (perspective-corrected) image that overrides the backend image for
+    // display and export. Stays null until the user applies a crop.
+    val localCroppedUri: String? = null,
     val ocrText: String? = null,
     val ocrStatus: ResultOcrStatus = ResultOcrStatus.PENDING,
     val processingStatus: String? = null,
@@ -48,6 +51,7 @@ data class DocumentResultState(
      */
     val preferredImageModel: String?
         get() = listOf(
+            localCroppedUri,
             processedImageUrl,
             enhancedImageUrl,
             croppedImageUrl,
