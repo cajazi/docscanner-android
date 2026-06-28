@@ -100,7 +100,9 @@ import com.dev.docscannerpdf.domain.crop.CropCorner
 import com.dev.docscannerpdf.domain.crop.CropReducer
 import com.dev.docscannerpdf.domain.crop.CropState
 import com.dev.docscannerpdf.domain.crop.PerspectiveQuad
+import com.dev.docscannerpdf.domain.detection.LiveFrameAnalyzer
 import com.dev.docscannerpdf.ui.crop.CropImageProcessor
+import com.dev.docscannerpdf.ui.detection.LumaFrameFactory
 import com.dev.docscannerpdf.ui.DocScannerApp
 import com.dev.docscannerpdf.util.AppConstants
 import com.dev.docscannerpdf.ui.APP_PIN_LENGTH
@@ -182,6 +184,7 @@ class MainActivity : FragmentActivity() {
         AnnotationRepository(File(filesDir, "annotations"))
     }
     private val cropImageProcessor by lazy { CropImageProcessor(applicationContext) }
+    private val liveFrameAnalyzer by lazy { LiveFrameAnalyzer() }
     internal var imageImportReview by mutableStateOf<PendingImageReview?>(null)
     internal var pendingImageImport by mutableStateOf<PendingImageImport?>(null)
     internal var importedImagePreview by mutableStateOf<PendingImageImport?>(null)
@@ -1063,8 +1066,27 @@ class MainActivity : FragmentActivity() {
             if (bitmap == null) {
                 cropState = null
                 viewModel.showError("Unable to load the image for cropping.")
-            } else {
-                cropSourceBitmap = bitmap
+                return@launch
+            }
+            cropSourceBitmap = bitmap
+
+            // Live edge detection provides an initial quad suggestion only — it never overrides a
+            // previously applied crop or a quad the user has already started adjusting.
+            if (appliedCropQuad == null) {
+                val suggestion = withContext(Dispatchers.Default) {
+                    runCatching {
+                        liveFrameAnalyzer.analyze(LumaFrameFactory.fromBitmap(bitmap))
+                    }.getOrNull()
+                }
+                val current = cropState
+                if (suggestion != null && current != null &&
+                    current.quad == PerspectiveQuad.full()
+                ) {
+                    cropState = current.copy(
+                        quad = suggestion.quad,
+                        originalQuad = suggestion.quad
+                    )
+                }
             }
         }
     }
