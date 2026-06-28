@@ -94,9 +94,12 @@ import com.dev.docscannerpdf.ui.pages.MultiPageEditorReducer
 import com.dev.docscannerpdf.ui.pages.MultiPageEditorState
 import com.dev.docscannerpdf.ui.pages.shouldOpenMultiPageEditor
 import com.dev.docscannerpdf.ui.pages.toMultiPageEditorState
+import com.dev.docscannerpdf.domain.annotation.Annotation
+import com.dev.docscannerpdf.domain.annotation.AnnotationHomographyMapper
 import com.dev.docscannerpdf.domain.crop.CropCorner
 import com.dev.docscannerpdf.domain.crop.CropReducer
 import com.dev.docscannerpdf.domain.crop.CropState
+import com.dev.docscannerpdf.domain.crop.PerspectiveQuad
 import com.dev.docscannerpdf.ui.crop.CropImageProcessor
 import com.dev.docscannerpdf.ui.DocScannerApp
 import com.dev.docscannerpdf.util.AppConstants
@@ -201,6 +204,9 @@ class MainActivity : FragmentActivity() {
     internal var annotationEditor by mutableStateOf<AnnotationEditorState?>(null)
     internal var cropState by mutableStateOf<CropState?>(null)
     internal var cropSourceBitmap by mutableStateOf<android.graphics.Bitmap?>(null)
+    // The crop quad (base-image normalized space) currently applied to the open result, used to
+    // keep annotations aligned with the cropped image. Null when no crop is applied.
+    internal var appliedCropQuad by mutableStateOf<PerspectiveQuad?>(null)
     internal var pdfToolsMessage by mutableStateOf<String?>(null)
     internal var pdfViewerDocument by mutableStateOf<DocumentEntity?>(null)
     internal var viewerDocumentPendingDelete by mutableStateOf<DocumentEntity?>(null)
@@ -949,7 +955,20 @@ class MainActivity : FragmentActivity() {
         persistCurrentAnnotations()
         annotationEditor = null
         cancelCropEditor()
+        appliedCropQuad = null
         documentResultState = null
+    }
+
+    /**
+     * Annotations as they should be drawn over the *currently displayed* image. When a crop is
+     * applied, the canonically-stored (base-image) annotations are projected forward through the
+     * crop homography so the overlay matches the cropped preview exactly. The stored annotations
+     * are never mutated.
+     */
+    internal fun displayAnnotations(): List<Annotation> {
+        val stored = annotationEditor?.page?.annotations ?: emptyList()
+        val quad = appliedCropQuad ?: return stored
+        return AnnotationHomographyMapper.applyQuadTransform(stored, sourceQuad = quad)
     }
 
     // ---- Annotations (local-first; persisted as a per-document JSON blob) ----
@@ -997,8 +1016,18 @@ class MainActivity : FragmentActivity() {
     internal fun selectAnnotationTool(tool: AnnotationTool) =
         updateAnnotationEditor(persist = false) { AnnotationEditorReducer.setTool(it, tool) }
 
-    internal fun addAnnotationStroke(stroke: AnnotationStroke) =
-        updateAnnotationEditor { AnnotationEditorReducer.addAnnotation(it, stroke) }
+    internal fun addAnnotationStroke(stroke: AnnotationStroke) {
+        // The overlay captures strokes in the displayed (possibly cropped) space. Project them
+        // back into the canonical base-image space so the store stays in one coordinate system.
+        val quad = appliedCropQuad
+        val canonical = if (quad == null) {
+            stroke
+        } else {
+            AnnotationHomographyMapper.inverseQuadTransform(listOf(stroke), sourceQuad = quad)
+                .firstOrNull() as? AnnotationStroke ?: stroke
+        }
+        updateAnnotationEditor { AnnotationEditorReducer.addAnnotation(it, canonical) }
+    }
 
     internal fun undoAnnotation() =
         updateAnnotationEditor { AnnotationEditorReducer.undo(it) }
@@ -1014,13 +1043,21 @@ class MainActivity : FragmentActivity() {
      * image — OCR text and annotations are left untouched.
      */
     internal fun openCropEditor() {
-        val source = documentResultState?.preferredImageModel
+        // Always crop from the base image (not the cropped override) so repeated crops adjust the
+        // same region instead of stacking transforms — which also keeps annotation sync stable.
+        val source = documentResultState?.baseImageModel
         if (source.isNullOrBlank()) {
             viewModel.showError("No image is available to crop.")
             return
         }
         cropSourceBitmap = null
-        cropState = CropState(sourceImageUri = source, mode = com.dev.docscannerpdf.domain.crop.CropMode.EDITING)
+        val startingQuad = appliedCropQuad ?: PerspectiveQuad.full()
+        cropState = CropState(
+            sourceImageUri = source,
+            quad = startingQuad,
+            originalQuad = startingQuad,
+            mode = com.dev.docscannerpdf.domain.crop.CropMode.EDITING
+        )
         lifecycleScope.launch {
             val bitmap = cropImageProcessor.loadSource(source)
             if (bitmap == null) {
@@ -1071,6 +1108,8 @@ class MainActivity : FragmentActivity() {
                 return@launch
             }
             documentResultState = documentResultState?.copy(localCroppedUri = croppedUri.toString())
+            // Remember the quad so annotations are projected to match the cropped image.
+            appliedCropQuad = applying.quad
             cancelCropEditor()
             viewModel.showError("Crop applied.")
         }
@@ -1189,8 +1228,12 @@ class MainActivity : FragmentActivity() {
         }
         val resolvedText = ocrText.ifBlank { state.ocrText }?.takeIf { it.isNotBlank() }
         // Prefer the live editor session; fall back to persisted annotations for this page.
-        val annotations = annotationEditor?.page?.annotations
+        val storedAnnotations = annotationEditor?.page?.annotations
             ?: annotationRepository.loadPage(annotationDocId(state), annotationPageId(state))
+        // Project annotations through the applied crop so they align with the exported image.
+        val annotations = appliedCropQuad?.let { quad ->
+            AnnotationHomographyMapper.applyQuadTransform(storedAnnotations, sourceQuad = quad)
+        } ?: storedAnnotations
         // A locally applied crop overrides the backend image for export, too.
         val croppedImage = state.localCroppedUri
         val pages = listOf(
