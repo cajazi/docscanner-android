@@ -19,6 +19,7 @@ import com.dev.docscannerpdf.navigation.canHandleSystemBack
 import com.dev.docscannerpdf.navigation.handleSystemBack
 import com.dev.docscannerpdf.ui.debug.ApiHealthScreen
 import com.dev.docscannerpdf.ui.crop.CropEditorScreen
+import com.dev.docscannerpdf.ui.detection.LiveScannerScreen
 import com.dev.docscannerpdf.ui.library.DocumentLibraryScreen
 import com.dev.docscannerpdf.ui.library.buildDocumentLibraryState
 import com.dev.docscannerpdf.ui.pages.MultiPageDocumentEditorScreen
@@ -332,6 +333,11 @@ internal fun DocScannerApp(host: MainActivity) {
                         onCompress = host::compressSelectedPdf,
                         onShareCompressedPdf = host::shareCompressedPdf
                     )
+                } else if (host.showLiveScanner) {
+                    LiveScannerScreen(
+                        onBack = { host.showLiveScanner = false },
+                        onReadyToCapture = host::onLiveCaptureReady
+                    )
                 } else if (host.showAiTools) {
                     AiToolsScreen(
                         onBack = { host.showAiTools = false },
@@ -339,6 +345,7 @@ internal fun DocScannerApp(host: MainActivity) {
                             host.startDocumentScanner(pageLimit = 20)
                             host.showAiTools = false
                         },
+                        onLiveScan = host::openLiveScanner,
                         onExtractText = {
                             host.showPdfTools = true
                             host.showAiTools = false

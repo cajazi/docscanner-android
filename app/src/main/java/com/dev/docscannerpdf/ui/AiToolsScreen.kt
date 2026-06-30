@@ -43,6 +43,7 @@ import androidx.compose.ui.unit.sp
 fun AiToolsScreen(
     onBack: () -> Unit,
     onSmartScan: () -> Unit,
+    onLiveScan: () -> Unit = {},
     onExtractText: () -> Unit,
     onPdfToWord: () -> Unit,
     onOpenAllTools: () -> Unit,
@@ -94,6 +95,13 @@ fun AiToolsScreen(
                 icon = Icons.Default.DocumentScanner,
                 tint = Color(0xFF20D6C7),
                 onClick = onSmartScan
+            )
+            AiToolCard(
+                label = "Live Detection",
+                description = "Auto-detect document edges from the camera in real time.",
+                icon = Icons.Default.DocumentScanner,
+                tint = Color(0xFF16C89A),
+                onClick = onLiveScan
             )
             AiToolCard(
                 label = "Extract Text",

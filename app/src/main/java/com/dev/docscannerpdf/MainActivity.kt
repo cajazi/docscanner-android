@@ -100,7 +100,9 @@ import com.dev.docscannerpdf.domain.crop.CropCorner
 import com.dev.docscannerpdf.domain.crop.CropReducer
 import com.dev.docscannerpdf.domain.crop.CropState
 import com.dev.docscannerpdf.domain.crop.PerspectiveQuad
+import com.dev.docscannerpdf.domain.detection.LiveFrameAnalyzer
 import com.dev.docscannerpdf.ui.crop.CropImageProcessor
+import com.dev.docscannerpdf.ui.detection.LumaFrameFactory
 import com.dev.docscannerpdf.ui.DocScannerApp
 import com.dev.docscannerpdf.util.AppConstants
 import com.dev.docscannerpdf.ui.APP_PIN_LENGTH
@@ -182,6 +184,7 @@ class MainActivity : FragmentActivity() {
         AnnotationRepository(File(filesDir, "annotations"))
     }
     private val cropImageProcessor by lazy { CropImageProcessor(applicationContext) }
+    private val liveFrameAnalyzer by lazy { LiveFrameAnalyzer() }
     internal var imageImportReview by mutableStateOf<PendingImageReview?>(null)
     internal var pendingImageImport by mutableStateOf<PendingImageImport?>(null)
     internal var importedImagePreview by mutableStateOf<PendingImageImport?>(null)
@@ -195,6 +198,7 @@ class MainActivity : FragmentActivity() {
     internal var signatureTargetUri by mutableStateOf<Uri?>(null)
     internal var showPdfTools by mutableStateOf(false)
     internal var showAiTools by mutableStateOf(false)
+    internal var showLiveScanner by mutableStateOf(false)
     internal var showDocumentLibrary by mutableStateOf(false)
     internal var documentLibraryQuery by mutableStateOf("")
     internal var documentLibrarySort by mutableStateOf(DocumentLibrarySort.NEWEST)
@@ -1063,8 +1067,27 @@ class MainActivity : FragmentActivity() {
             if (bitmap == null) {
                 cropState = null
                 viewModel.showError("Unable to load the image for cropping.")
-            } else {
-                cropSourceBitmap = bitmap
+                return@launch
+            }
+            cropSourceBitmap = bitmap
+
+            // Live edge detection provides an initial quad suggestion only — it never overrides a
+            // previously applied crop or a quad the user has already started adjusting.
+            if (appliedCropQuad == null) {
+                val suggestion = withContext(Dispatchers.Default) {
+                    runCatching {
+                        liveFrameAnalyzer.analyze(LumaFrameFactory.fromBitmap(bitmap))
+                    }.getOrNull()
+                }
+                val current = cropState
+                if (suggestion != null && current != null &&
+                    current.quad == PerspectiveQuad.full()
+                ) {
+                    cropState = current.copy(
+                        quad = suggestion.quad,
+                        originalQuad = suggestion.quad
+                    )
+                }
             }
         }
     }
@@ -1113,6 +1136,20 @@ class MainActivity : FragmentActivity() {
             cancelCropEditor()
             viewModel.showError("Crop applied.")
         }
+    }
+
+    /** Opens the live CameraX detection screen. */
+    internal fun openLiveScanner() {
+        showAiTools = false
+        showLiveScanner = true
+    }
+
+    /**
+     * Auto-capture signal from the live detection loop. Per this slice it is an event only — it
+     * does not trigger a shutter; it just records that a stable document was detected.
+     */
+    internal fun onLiveCaptureReady() {
+        Log.d(TAG, "Live auto-capture signal: stable document detected.")
     }
 
     /** Opens the local-first document library; documents load from Room with no backend calls. */

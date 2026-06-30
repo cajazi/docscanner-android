@@ -26,6 +26,7 @@ enum class MainScreen {
     DocumentLibrary,
     MultiPageEditor,
     CropEditor,
+    LiveScanner,
     ImageImportReview,
     ImageEditor,
     ImportedImagePreview
