@@ -3,6 +3,7 @@ package com.dev.docscannerpdf.domain.export
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Paint
+import android.graphics.PointF
 import com.dev.docscannerpdf.domain.annotation.TransformedAnnotation
 import com.dev.docscannerpdf.domain.ocr.TransformedOCRBox
 
@@ -17,31 +18,42 @@ object PdfExportFinalizer {
         val output = source.copy(Bitmap.Config.ARGB_8888, true)
         val canvas = Canvas(output)
 
-        val paint = Paint().apply {
+        // Base paint (immutable pattern)
+        val basePaint = Paint().apply {
             isAntiAlias = true
             strokeWidth = 4f
+            style = Paint.Style.STROKE
         }
 
-        // OCR layer (light overlay)
+        // ----------------------------
+        // OCR LAYER (light overlay)
+        // ----------------------------
         ocrBoxes.forEach { box ->
-            paint.alpha = 80
+            val paint = Paint(basePaint).apply {
+                alpha = 80
+                strokeWidth = 3f
+            }
             drawPolygon(canvas, paint, box.points)
         }
 
-        // Annotation layer (strong overlay)
+        // ----------------------------
+        // ANNOTATION LAYER (strong overlay)
+        // ----------------------------
         annotations.forEach { ann ->
-            when (ann.type) {
-                "pen" -> {
-                    paint.alpha = 255
-                    paint.strokeWidth = 5f
-                }
-                "highlight" -> {
-                    paint.alpha = 120
-                    paint.strokeWidth = 12f
-                }
-                else -> {
-                    paint.alpha = 255
-                    paint.strokeWidth = 4f
+            val paint = Paint(basePaint).apply {
+                when (ann.type) {
+                    "pen" -> {
+                        alpha = 255
+                        strokeWidth = 5f
+                    }
+                    "highlight" -> {
+                        alpha = 120
+                        strokeWidth = 12f
+                    }
+                    else -> {
+                        alpha = 255
+                        strokeWidth = 4f
+                    }
                 }
             }
 
@@ -54,8 +66,10 @@ object PdfExportFinalizer {
     private fun drawPolygon(
         canvas: Canvas,
         paint: Paint,
-        points: List<android.graphics.PointF>
+        points: List<PointF>
     ) {
+        if (points.size < 2) return
+
         for (i in points.indices) {
             val p1 = points[i]
             val p2 = points[(i + 1) % points.size]
