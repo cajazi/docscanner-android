@@ -48,8 +48,8 @@ android {
 
 kotlin {
     compilerOptions {
-        languageVersion.set(KotlinVersion.KOTLIN_2_0)
-        apiVersion.set(KotlinVersion.KOTLIN_2_0)
+        languageVersion.set(KotlinVersion.KOTLIN_2_2)
+        apiVersion.set(KotlinVersion.KOTLIN_2_2)
         jvmTarget.set(JvmTarget.JVM_11)
     }
 }
@@ -63,10 +63,10 @@ kapt {
 
 configurations.configureEach {
     resolutionStrategy.force(
-        "org.jetbrains.kotlin:kotlin-stdlib:2.0.21",
-        "org.jetbrains.kotlin:kotlin-stdlib-common:2.0.21",
-        "org.jetbrains.kotlin:kotlin-stdlib-jdk7:2.0.21",
-        "org.jetbrains.kotlin:kotlin-stdlib-jdk8:2.0.21"
+        "org.jetbrains.kotlin:kotlin-stdlib:2.2.10",
+        "org.jetbrains.kotlin:kotlin-stdlib-common:2.2.10",
+        "org.jetbrains.kotlin:kotlin-stdlib-jdk7:2.2.10",
+        "org.jetbrains.kotlin:kotlin-stdlib-jdk8:2.2.10"
     )
 }
 
@@ -80,9 +80,9 @@ dependencies {
     implementation(libs.androidx.compose.ui.tooling.preview)
     implementation(libs.coil.compose)
     implementation(libs.androidx.core.ktx)
-    implementation("androidx.room:room-runtime:2.6.1")
-    implementation("androidx.room:room-ktx:2.6.1")
-    kapt("androidx.room:room-compiler:2.6.1")
+    implementation("androidx.room:room-runtime:2.8.4")
+    implementation("androidx.room:room-ktx:2.8.4")
+    kapt("androidx.room:room-compiler:2.8.4")
     implementation("androidx.biometric:biometric:1.1.0")
     implementation("com.android.billingclient:billing-ktx:8.2.1")
     implementation(platform("com.google.firebase:firebase-bom:33.7.0"))

@@ -24,10 +24,10 @@ data class AnnotationPoint(val x: Float, val y: Float)
  * them uniformly. [color] is a packed ARGB value (stored as [Long] for stable serialization).
  */
 @Serializable
-sealed interface Annotation {
-    val id: String
-    val type: AnnotationType
-    val color: Long
+sealed class Annotation {
+    abstract val id: String
+    abstract val type: AnnotationType
+    abstract val color: Long
 }
 
 /** A freehand pen or highlighter stroke described by its normalized [points]. */
@@ -39,7 +39,7 @@ data class AnnotationStroke(
     val points: List<AnnotationPoint>,
     override val color: Long,
     val thickness: Float
-) : Annotation
+) : Annotation()
 
 /** A text note anchored at a normalized [position]. */
 @Serializable
@@ -51,7 +51,7 @@ data class AnnotationText(
     override val color: Long,
     val fontSize: Float,
     override val type: AnnotationType = AnnotationType.TEXT
-) : Annotation
+) : Annotation()
 
 /** Serializable container persisted per document: a map of pageId -> its annotations. */
 @Serializable
