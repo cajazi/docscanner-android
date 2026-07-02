@@ -81,8 +81,15 @@ class PdfExportService(
                         page.pageNumber
                     ).create()
                     val pdfPage = pdfDocument.startPage(pageInfo)
-                    drawImageOnA4Page(pdfPage.canvas, bitmap)
-                    page.ocrText?.let { drawInvisibleTextLayer(pdfPage.canvas, it) }
+                    val imageRect = drawImageOnA4Page(pdfPage.canvas, bitmap)
+                    // Positioned OCR boxes are the single source of truth for searchable text
+                    // when available; the reflowed whole-string layer is only a fallback for
+                    // pages without box geometry, so the two layers never duplicate the text.
+                    if (page.textSpans.isNotEmpty()) {
+                        drawPositionedTextLayer(pdfPage.canvas, page.textSpans, imageRect)
+                    } else {
+                        page.ocrText?.let { drawInvisibleTextLayer(pdfPage.canvas, it) }
+                    }
                     if (page.annotations.isNotEmpty()) {
                         drawAnnotationOverlay(pdfPage.canvas, page.annotations)
                     }
@@ -100,21 +107,21 @@ class PdfExportService(
         return Result.Success(uri = uri, file = outputFile, pageCount = pages.size)
     }
 
-    /** Scales [bitmap] to fit a centered A4 page on a white background. */
-    private fun drawImageOnA4Page(canvas: Canvas, bitmap: Bitmap) {
+    /**
+     * Scales [bitmap] to fit a centered A4 page on a white background, returning the exact
+     * destination rect used so callers (the positioned text layer) can place overlays through
+     * the identical placement rule via [PdfCoordinateMapper].
+     */
+    private fun drawImageOnA4Page(canvas: Canvas, bitmap: Bitmap): android.graphics.RectF {
         canvas.drawColor(Color.WHITE)
-        val pageWidth = AppConstants.A4_WIDTH_POINTS.toFloat()
-        val pageHeight = AppConstants.A4_HEIGHT_POINTS.toFloat()
-        val scale = minOf(
-            pageWidth / bitmap.width.toFloat(),
-            pageHeight / bitmap.height.toFloat()
+        val destination = PdfCoordinateMapper.imageDestinationRect(
+            pageWidth = AppConstants.A4_WIDTH_POINTS.toFloat(),
+            pageHeight = AppConstants.A4_HEIGHT_POINTS.toFloat(),
+            imageWidth = bitmap.width,
+            imageHeight = bitmap.height
         )
-        val imageWidth = bitmap.width * scale
-        val imageHeight = bitmap.height * scale
-        val left = (pageWidth - imageWidth) / 2f
-        val top = (pageHeight - imageHeight) / 2f
-        val destination = android.graphics.RectF(left, top, left + imageWidth, top + imageHeight)
         canvas.drawBitmap(bitmap, null, destination, Paint(Paint.ANTI_ALIAS_FLAG))
+        return destination
     }
 
     /**
@@ -141,6 +148,30 @@ class PdfExportService(
             if (y > bottomLimit) break
             canvas.drawText(line, margin, y, paint)
             y += lineHeight
+        }
+    }
+
+    /**
+     * Draws each [PdfTextSpan] with a fully transparent paint at its own bounds, the same
+     * invisible-but-selectable trick [drawInvisibleTextLayer] uses. Unlike the reflowed
+     * [drawInvisibleTextLayer] layer, each span is positioned exactly where its OCR box was
+     * detected — mapped through [imageRect] (the same rect the page image was drawn into) via
+     * [PdfCoordinateMapper] — so selectable text aligns with the word it corresponds to even
+     * when the image is letterboxed on the page.
+     */
+    private fun drawPositionedTextLayer(
+        canvas: Canvas,
+        spans: List<PdfTextSpan>,
+        imageRect: android.graphics.RectF
+    ) {
+        val paint = Paint().apply {
+            color = Color.argb(0, 0, 0, 0)
+            isAntiAlias = true
+        }
+        spans.forEach { span ->
+            val pageBounds = PdfCoordinateMapper.mapToPage(span.bounds, imageRect)
+            paint.textSize = pageBounds.height().coerceAtLeast(1f)
+            canvas.drawText(span.text, pageBounds.left, pageBounds.bottom, paint)
         }
     }
 
