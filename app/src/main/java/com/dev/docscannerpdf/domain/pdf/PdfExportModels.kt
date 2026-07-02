@@ -20,7 +20,8 @@ data class PdfExportPageInput(
     val enhancedImageUrl: String? = null,
     val processedImageUrl: String? = null,
     val ocrText: String? = null,
-    val annotations: List<Annotation> = emptyList()
+    val annotations: List<Annotation> = emptyList(),
+    val textSpans: List<PdfTextSpan> = emptyList()
 )
 
 /**
@@ -32,7 +33,8 @@ data class PdfExportPagePlan(
     val imageUrl: String,
     val imageSource: PdfExportImageSource,
     val ocrText: String?,
-    val annotations: List<Annotation> = emptyList()
+    val annotations: List<Annotation> = emptyList(),
+    val textSpans: List<PdfTextSpan> = emptyList()
 ) {
     /** True when this page will receive an invisible, selectable OCR text layer. */
     val hasSearchableText: Boolean
@@ -89,7 +91,8 @@ object PdfExportPlanner {
                 imageUrl = image.first,
                 imageSource = image.second,
                 ocrText = page.ocrText?.takeIf { it.isNotBlank() },
-                annotations = page.annotations
+                annotations = page.annotations,
+                textSpans = page.textSpans
             )
         }
         return PdfExportPlan.Ready(resolved)

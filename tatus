@@ -1,0 +1,173 @@
+[1mdiff --git a/app/src/main/java/com/dev/docscannerpdf/domain/pdf/PdfExportModels.kt b/app/src/main/java/com/dev/docscannerpdf/domain/pdf/PdfExportModels.kt[m
+[1mindex fc72c68..d09a3b8 100644[m
+[1m--- a/app/src/main/java/com/dev/docscannerpdf/domain/pdf/PdfExportModels.kt[m
+[1m+++ b/app/src/main/java/com/dev/docscannerpdf/domain/pdf/PdfExportModels.kt[m
+[36m@@ -20,7 +20,8 @@[m [mdata class PdfExportPageInput([m
+     val enhancedImageUrl: String? = null,[m
+     val processedImageUrl: String? = null,[m
+     val ocrText: String? = null,[m
+[31m-    val annotations: List<Annotation> = emptyList()[m
+[32m+[m[32m    val annotations: List<Annotation> = emptyList(),[m
+[32m+[m[32m    val textSpans: List<PdfTextSpan> = emptyList()[m
+ )[m
+ [m
+ /**[m
+[36m@@ -32,7 +33,8 @@[m [mdata class PdfExportPagePlan([m
+     val imageUrl: String,[m
+     val imageSource: PdfExportImageSource,[m
+     val ocrText: String?,[m
+[31m-    val annotations: List<Annotation> = emptyList()[m
+[32m+[m[32m    val annotations: List<Annotation> = emptyList(),[m
+[32m+[m[32m    val textSpans: List<PdfTextSpan> = emptyList()[m
+ ) {[m
+     /** True when this page will receive an invisible, selectable OCR text layer. */[m
+     val hasSearchableText: Boolean[m
+[36m@@ -89,7 +91,8 @@[m [mobject PdfExportPlanner {[m
+                 imageUrl = image.first,[m
+                 imageSource = image.second,[m
+                 ocrText = page.ocrText?.takeIf { it.isNotBlank() },[m
+[31m-                annotations = page.annotations[m
+[32m+[m[32m                annotations = page.annotations,[m
+[32m+[m[32m                textSpans = page.textSpans[m
+             )[m
+         }[m
+         return PdfExportPlan.Ready(resolved)[m
+[1mdiff --git a/app/src/main/java/com/dev/docscannerpdf/domain/pdf/PdfExportService.kt b/app/src/main/java/com/dev/docscannerpdf/domain/pdf/PdfExportService.kt[m
+[1mindex 48a7a55..f4a2121 100644[m
+[1m--- a/app/src/main/java/com/dev/docscannerpdf/domain/pdf/PdfExportService.kt[m
+[1m+++ b/app/src/main/java/com/dev/docscannerpdf/domain/pdf/PdfExportService.kt[m
+[36m@@ -83,6 +83,9 @@[m [mclass PdfExportService([m
+                     val pdfPage = pdfDocument.startPage(pageInfo)[m
+                     drawImageOnA4Page(pdfPage.canvas, bitmap)[m
+                     page.ocrText?.let { drawInvisibleTextLayer(pdfPage.canvas, it) }[m
+[32m+[m[32m                    if (page.textSpans.isNotEmpty()) {[m
+[32m+[m[32m                        drawPositionedTextLayer(pdfPage.canvas, page.textSpans)[m
+[32m+[m[32m                    }[m
+                     if (page.annotations.isNotEmpty()) {[m
+                         drawAnnotationOverlay(pdfPage.canvas, page.annotations)[m
+                     }[m
+[36m@@ -144,6 +147,31 @@[m [mclass PdfExportService([m
+         }[m
+     }[m
+ [m
+[32m+[m[32m    /**[m
+[32m+[m[32m     * Draws each [PdfTextSpan] with a fully transparent paint at its own normalized bounds,[m
+[32m+[m[32m     * the same invisible-but-selectable trick [drawInvisibleTextLayer] uses. Unlike the[m
+[32m+[m[32m     * reflowed [drawInvisibleTextLayer] layer, each span is positioned exactly where its OCR[m
+[32m+[m[32m     * box was detected, so selectable text aligns with the word it corresponds to on the page.[m
+[32m+[m[32m     */[m
+[32m+[m[32m    private fun drawPositionedTextLayer(canvas: Canvas, spans: List<PdfTextSpan>) {[m
+[32m+[m[32m        val pageWidth = AppConstants.A4_WIDTH_POINTS.toFloat()[m
+[32m+[m[32m        val pageHeight = AppConstants.A4_HEIGHT_POINTS.toFloat()[m
+[32m+[m[32m        val paint = Paint().apply {[m
+[32m+[m[32m            color = Color.argb(0, 0, 0, 0)[m
+[32m+[m[32m            isAntiAlias = true[m
+[32m+[m[32m        }[m
+[32m+[m[32m        spans.forEach { span ->[m
+[32m+[m[32m            val heightPoints = (span.bounds.height * pageHeight).coerceAtLeast(1f)[m
+[32m+[m[32m            paint.textSize = heightPoints[m
+[32m+[m[32m            canvas.drawText([m
+[32m+[m[32m                span.text,[m
+[32m+[m[32m                span.bounds.left * pageWidth,[m
+[32m+[m[32m                span.bounds.bottom * pageHeight,[m
+[32m+[m[32m                paint[m
+[32m+[m[32m            )[m
+[32m+[m[32m        }[m
+[32m+[m[32m    }[m
+[32m+[m
+     /**[m
+      * Renders annotations on top of the page. Coordinates are normalized (0f..1f) against the[m
+      * page, so they map onto the A4 canvas directly. Highlight strokes draw translucent and[m
+[1mdiff --git a/app/src/main/java/com/dev/docscannerpdf/presentation/ScannerViewModel.kt b/app/src/main/java/com/dev/docscannerpdf/presentation/ScannerViewModel.kt[m
+[1mindex 7d5b3ba..74d97f4 100644[m
+[1m--- a/app/src/main/java/com/dev/docscannerpdf/presentation/ScannerViewModel.kt[m
+[1m+++ b/app/src/main/java/com/dev/docscannerpdf/presentation/ScannerViewModel.kt[m
+[36m@@ -3,7 +3,9 @@[m [mpackage com.dev.docscannerpdf.presentation[m
+ import android.app.Activity[m
+ import android.content.Context[m
+ import android.graphics.Bitmap[m
+[32m+[m[32mimport android.graphics.PointF[m
+ import android.net.Uri[m
+[32m+[m[32mimport android.util.Log[m
+ import androidx.lifecycle.ViewModel[m
+ import androidx.lifecycle.viewModelScope[m
+ import kotlinx.coroutines.FlowPreview[m
+[36m@@ -14,9 +16,11 @@[m [mimport com.dev.docscannerpdf.data.repository.DocumentRepository[m
+ import com.dev.docscannerpdf.data.repository.FolderRepository[m
+ import com.dev.docscannerpdf.data.repository.TagRepository[m
+ import com.dev.docscannerpdf.domain.analytics.AnalyticsRepository[m
+[32m+[m[32mimport com.dev.docscannerpdf.domain.ocr.TransformedOCRBox[m
+ import com.google.android.gms.tasks.Task[m
+ import com.google.mlkit.vision.documentscanner.GmsDocumentScanningResult[m
+ import com.google.mlkit.vision.common.InputImage[m
+[32m+[m[32mimport com.google.mlkit.vision.text.Text[m
+ import com.google.mlkit.vision.text.TextRecognition[m
+ import com.google.mlkit.vision.text.latin.TextRecognizerOptions[m
+ import kotlinx.coroutines.Dispatchers[m
+[36m@@ -499,6 +503,66 @@[m [mclass ScannerViewModel([m
+         }[m
+     }[m
+ [m
+[32m+[m[32m    /**[m
+[32m+[m[32m     * Structured OCR: the same ML Kit pass as [recognizeText], but preserving each element's[m
+[32m+[m[32m     * bounding polygon instead of collapsing straight to a flat string. This is the single[m
+[32m+[m[32m     * source of truth for OCR geometry — anything that only needs plain text can derive it[m
+[32m+[m[32m     * from [TransformedOCRBox.text] rather than the pipeline running recognition twice.[m
+[32m+[m[32m     * Points are in image-pixel space, unnormalized, matching the scan's original orientation.[m
+[32m+[m[32m     */[m
+[32m+[m[32m    suspend fun recognizeTextBoxes([m
+[32m+[m[32m        context: Context,[m
+[32m+[m[32m        imageUri: Uri[m
+[32m+[m[32m    ): List<TransformedOCRBox> {[m
+[32m+[m[32m        val image = withContext(Dispatchers.IO) {[m
+[32m+[m[32m            InputImage.fromFilePath(context.applicationContext, imageUri)[m
+[32m+[m[32m        }[m
+[32m+[m[32m        val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)[m
+[32m+[m[32m        return try {[m
+[32m+[m[32m            extractOcrBoxes(recognizer.process(image).await())[m
+[32m+[m[32m        } finally {[m
+[32m+[m[32m            recognizer.close()[m
+[32m+[m[32m        }[m
+[32m+[m[32m    }[m
+[32m+[m
+[32m+[m[32m    /** Bitmap variant of [recognizeTextBoxes]; see that function for the contract. */[m
+[32m+[m[32m    suspend fun recognizeTextBoxes(bitmap: Bitmap): List<TransformedOCRBox> {[m
+[32m+[m[32m        val image = InputImage.fromBitmap(bitmap, 0)[m
+[32m+[m[32m        val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)[m
+[32m+[m[32m        return try {[m
+[32m+[m[32m            extractOcrBoxes(recognizer.process(image).await())[m
+[32m+[m[32m        } finally {[m
+[32m+[m[32m            recognizer.close()[m
+[32m+[m[32m        }[m
+[32m+[m[32m    }[m
+[32m+[m
+[32m+[m[32m    /** Flattens ML Kit's block/line/element hierarchy into one element-level box per word. */[m
+[32m+[m[32m    private fun extractOcrBoxes(result: Text): List<TransformedOCRBox> {[m
+[32m+[m[32m        val boxes = result.textBlocks[m
+[32m+[m[32m            .flatMap { block -> block.lines }[m
+[32m+[m[32m            .flatMap { line -> line.elements }[m
+[32m+[m[32m            .mapNotNull { element ->[m
+[32m+[m[32m                val box = element.boundingBox ?: return@mapNotNull null[m
+[32m+[m[32m                TransformedOCRBox([m
+[32m+[m[32m                    text = element.text,[m
+[32m+[m[32m                    points = listOf([m
+[32m+[m[32m                        PointF(box.left.toFloat(), box.top.toFloat()),[m
+[32m+[m[32m                        PointF(box.right.toFloat(), box.top.toFloat()),[m
+[32m+[m[32m                        PointF(box.right.toFloat(), box.bottom.toFloat()),[m
+[32m+[m[32m                        PointF(box.left.toFloat(), box.bottom.toFloat())[m
+[32m+[m[32m                    )[m
+[32m+[m[32m                )[m
+[32m+[m[32m            }[m
+[32m+[m[32m        boxes.firstOrNull()?.let { sample ->[m
+[32m+[m[32m            Log.d([m
+[32m+[m[32m                "ScannerViewModel",[m
+[32m+[m[32m                "OCR boxes: ${boxes.size} elements, sample=\"${sample.text}\" " +[m
+[32m+[m[32m                    "points=${sample.points.size}"[m
+[32m+[m[32m            )[m
+[32m+[m[32m        }[m
+[32m+[m[32m        return boxes[m
+[32m+[m[32m    }[m
+[32m+[m
+     private suspend fun copyUriToPrivateStorage([m
+         context: Context,[m
+         sourceUri: Uri,[m

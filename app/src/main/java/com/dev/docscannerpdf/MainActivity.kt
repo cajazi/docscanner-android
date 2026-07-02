@@ -61,9 +61,12 @@ import com.dev.docscannerpdf.domain.annotation.AnnotationRepository
 import com.dev.docscannerpdf.domain.annotation.AnnotationStroke
 import com.dev.docscannerpdf.domain.annotation.AnnotationTool
 import com.dev.docscannerpdf.domain.annotation.PageAnnotationState
+import com.dev.docscannerpdf.domain.pdf.PdfCoordinateMapper
 import com.dev.docscannerpdf.domain.pdf.PdfExportPageInput
 import com.dev.docscannerpdf.domain.pdf.PdfExportService
 import com.dev.docscannerpdf.domain.pdf.PdfRenderHelper
+import com.dev.docscannerpdf.domain.pdf.PdfTextSpan
+import com.dev.docscannerpdf.domain.pdf.SearchablePdfTextLayer
 import com.dev.docscannerpdf.navigation.canHandleSystemBack
 import com.dev.docscannerpdf.navigation.handleSystemBack
 import com.dev.docscannerpdf.network.NetworkResult
@@ -1273,19 +1276,21 @@ class MainActivity : FragmentActivity() {
         } ?: storedAnnotations
         // A locally applied crop overrides the backend image for export, too.
         val croppedImage = state.localCroppedUri
-        val pages = listOf(
-            PdfExportPageInput(
-                pageNumber = 1,
-                enhancedImageUrl = if (croppedImage.isNullOrBlank()) state.enhancedImageUrl else null,
-                processedImageUrl = croppedImage ?: state.processedImageUrl,
-                ocrText = resolvedText,
-                annotations = annotations
-            )
-        )
         val title = importedImagePreview?.title ?: "Searchable PDF"
 
         lifecycleScope.launch {
             viewModel.showError("Exporting searchable PDF…")
+            val textSpans = buildSearchableTextSpans(state)
+            val pages = listOf(
+                PdfExportPageInput(
+                    pageNumber = 1,
+                    enhancedImageUrl = if (croppedImage.isNullOrBlank()) state.enhancedImageUrl else null,
+                    processedImageUrl = croppedImage ?: state.processedImageUrl,
+                    ocrText = resolvedText,
+                    annotations = annotations,
+                    textSpans = textSpans
+                )
+            )
             when (val result = pdfExportService.export(pages = pages, fileName = title)) {
                 is PdfExportService.Result.Success -> {
                     viewModel.saveGeneratedPdfDocument(
@@ -1299,6 +1304,34 @@ class MainActivity : FragmentActivity() {
                 is PdfExportService.Result.Failure ->
                     viewModel.showError(result.message)
             }
+        }
+    }
+
+    /**
+     * Builds positioned, searchable text spans for [state]'s exported page: OCR boxes are
+     * recognized fresh against the same base image the crop editor works from (so no separate
+     * OCR pipeline is introduced — [ScannerViewModel.recognizeTextBoxes] already existed), then
+     * normalized to page space and, if a crop was applied, projected through the same homography
+     * annotations use so the boxes land on the cropped output exactly where the text is.
+     * Returns an empty list (falling back to the reflowed whole-string layer) whenever no base
+     * image is available or OCR yields nothing — this never blocks the export.
+     */
+    private suspend fun buildSearchableTextSpans(state: DocumentResultState): List<PdfTextSpan> {
+        val source = state.baseImageModel?.takeIf { it.isNotBlank() } ?: return emptyList()
+        val bitmap = runCatching { cropImageProcessor.loadSource(source) }.getOrNull()
+            ?: return emptyList()
+        return try {
+            val boxes = viewModel.recognizeTextBoxes(bitmap)
+            val normalizedBoxes = PdfCoordinateMapper.normalize(boxes, bitmap.width, bitmap.height)
+            val projectedBoxes = appliedCropQuad?.let { quad ->
+                PdfCoordinateMapper.projectThroughCrop(normalizedBoxes, sourceQuad = quad)
+            } ?: normalizedBoxes
+            SearchablePdfTextLayer.build(projectedBoxes)
+        } catch (throwable: Throwable) {
+            Log.w(TAG, "Unable to build positioned OCR text spans: ${throwable.message}")
+            emptyList()
+        } finally {
+            bitmap.recycle()
         }
     }
 

@@ -3,7 +3,9 @@ package com.dev.docscannerpdf.presentation
 import android.app.Activity
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.PointF
 import android.net.Uri
+import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.FlowPreview
@@ -14,9 +16,11 @@ import com.dev.docscannerpdf.data.repository.DocumentRepository
 import com.dev.docscannerpdf.data.repository.FolderRepository
 import com.dev.docscannerpdf.data.repository.TagRepository
 import com.dev.docscannerpdf.domain.analytics.AnalyticsRepository
+import com.dev.docscannerpdf.domain.ocr.TransformedOCRBox
 import com.google.android.gms.tasks.Task
 import com.google.mlkit.vision.documentscanner.GmsDocumentScanningResult
 import com.google.mlkit.vision.common.InputImage
+import com.google.mlkit.vision.text.Text
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 import kotlinx.coroutines.Dispatchers
@@ -497,6 +501,66 @@ class ScannerViewModel(
         } finally {
             recognizer.close()
         }
+    }
+
+    /**
+     * Structured OCR: the same ML Kit pass as [recognizeText], but preserving each element's
+     * bounding polygon instead of collapsing straight to a flat string. This is the single
+     * source of truth for OCR geometry — anything that only needs plain text can derive it
+     * from [TransformedOCRBox.text] rather than the pipeline running recognition twice.
+     * Points are in image-pixel space, unnormalized, matching the scan's original orientation.
+     */
+    suspend fun recognizeTextBoxes(
+        context: Context,
+        imageUri: Uri
+    ): List<TransformedOCRBox> {
+        val image = withContext(Dispatchers.IO) {
+            InputImage.fromFilePath(context.applicationContext, imageUri)
+        }
+        val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
+        return try {
+            extractOcrBoxes(recognizer.process(image).await())
+        } finally {
+            recognizer.close()
+        }
+    }
+
+    /** Bitmap variant of [recognizeTextBoxes]; see that function for the contract. */
+    suspend fun recognizeTextBoxes(bitmap: Bitmap): List<TransformedOCRBox> {
+        val image = InputImage.fromBitmap(bitmap, 0)
+        val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
+        return try {
+            extractOcrBoxes(recognizer.process(image).await())
+        } finally {
+            recognizer.close()
+        }
+    }
+
+    /** Flattens ML Kit's block/line/element hierarchy into one element-level box per word. */
+    private fun extractOcrBoxes(result: Text): List<TransformedOCRBox> {
+        val boxes = result.textBlocks
+            .flatMap { block -> block.lines }
+            .flatMap { line -> line.elements }
+            .mapNotNull { element ->
+                val box = element.boundingBox ?: return@mapNotNull null
+                TransformedOCRBox(
+                    text = element.text,
+                    points = listOf(
+                        PointF(box.left.toFloat(), box.top.toFloat()),
+                        PointF(box.right.toFloat(), box.top.toFloat()),
+                        PointF(box.right.toFloat(), box.bottom.toFloat()),
+                        PointF(box.left.toFloat(), box.bottom.toFloat())
+                    )
+                )
+            }
+        boxes.firstOrNull()?.let { sample ->
+            Log.d(
+                "ScannerViewModel",
+                "OCR boxes: ${boxes.size} elements, sample=\"${sample.text}\" " +
+                    "points=${sample.points.size}"
+            )
+        }
+        return boxes
     }
 
     private suspend fun copyUriToPrivateStorage(
