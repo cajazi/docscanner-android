@@ -77,6 +77,7 @@ import androidx.compose.material.icons.filled.WorkspacePremium
 import androidx.compose.material.icons.filled.Image as ImageIcon
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Checkbox
@@ -1047,6 +1048,12 @@ private fun ScannerTopSection(
     }
 }
 
+/**
+ * ID Cards entry screen, styled to resemble CamScanner's "ID Cards" flow: a light page with a
+ * static paper-mock preview (an ID card resting on an A4 sheet), category chips, and a prominent
+ * primary action. Purely a visual layer — [onMakeItNow] still drives the existing
+ * [com.google.mlkit.vision.documentscanner.GmsDocumentScanner] capture path unchanged.
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun IdCardFeatureScreen(
@@ -1059,17 +1066,32 @@ fun IdCardFeatureScreen(
 ) {
     val tabs = listOf("General", "ID Card", "Driver License", "Passport", "Bank Card")
 
+    val pageBackground = Color(0xFFF3F4F7)
+    val paperColor = Color.White
+    val paperBorder = Color(0xFFE4E6EC)
+    val labelChipColor = Color(0xFFEFF1F5)
+    val textDark = Color(0xFF1B1D22)
+    val textMuted = Color(0xFF6B7280)
+    val primaryBlue = Color(0xFF1E66E5)
+    val idMockFill = Color(0xFFE4ECFB)
+    val idMockBorder = Color(0xFFC2D3F2)
+    val idMockLineStrong = Color(0xFFB0C4EA)
+    val idMockLineSoft = Color(0xFFCBD8F0)
+    val chipUnselectedBg = Color(0xFFEDEEF2)
+    val chipUnselectedLabel = Color(0xFF5B6270)
+
     Column(
         modifier = modifier
             .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background)
+            .background(pageBackground)
     ) {
         TopAppBar(
             navigationIcon = {
                 IconButton(onClick = onBack) {
                     Icon(
                         imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                        contentDescription = "Back"
+                        contentDescription = "Back",
+                        tint = textDark
                     )
                 }
             },
@@ -1077,13 +1099,14 @@ fun IdCardFeatureScreen(
                 Text(
                     text = "ID Cards",
                     style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.SemiBold
+                    fontWeight = FontWeight.SemiBold,
+                    color = textDark
                 )
             },
             colors = TopAppBarDefaults.topAppBarColors(
-                containerColor = MaterialTheme.colorScheme.background,
-                titleContentColor = Color.White,
-                navigationIconContentColor = Color.White
+                containerColor = pageBackground,
+                titleContentColor = textDark,
+                navigationIconContentColor = textDark
             )
         )
 
@@ -1093,44 +1116,87 @@ fun IdCardFeatureScreen(
                 .padding(horizontal = 16.dp, vertical = 16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            Box(
+            // Static A4-paper mock: a light "sheet" with an ID-card-shaped preview resting on
+            // it, in place of the previous dark placeholder box. Purely decorative Compose
+            // shapes — no bitmap assets, no real card data involved.
+            Surface(
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(260.dp)
                     .clip(RoundedCornerShape(18.dp))
-                    .background(Color(0xFF1C1E22))
+                    .border(1.dp, paperBorder, RoundedCornerShape(18.dp)),
+                color = paperColor,
+                shadowElevation = 2.dp
             ) {
-                Surface(
-                    modifier = Modifier
-                        .align(Alignment.TopStart)
-                        .padding(14.dp),
-                    shape = RoundedCornerShape(8.dp),
-                    color = Color(0xFF2B3038)
-                ) {
-                    Text(
-                        text = "A4 paper example",
-                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                        style = MaterialTheme.typography.labelSmall,
-                        fontWeight = FontWeight.SemiBold,
-                        color = Color(0xFFB0BEC5)
-                    )
-                }
-
-                Surface(
-                    modifier = Modifier
-                        .align(Alignment.Center)
-                        .width(220.dp)
-                        .height(150.dp)
-                        .clip(RoundedCornerShape(16.dp))
-                        .border(1.dp, Color(0xFF2F3238), RoundedCornerShape(16.dp)),
-                    color = Color(0xFF101214)
-                ) {
-                    Box(contentAlignment = Alignment.Center) {
+                Box(modifier = Modifier.fillMaxSize()) {
+                    Surface(
+                        modifier = Modifier
+                            .align(Alignment.TopStart)
+                            .padding(14.dp),
+                        shape = RoundedCornerShape(8.dp),
+                        color = labelChipColor
+                    ) {
                         Text(
-                            text = "ID Card Preview",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = Color(0xFF8A99A8)
+                            text = "A4 paper example",
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.SemiBold,
+                            color = textMuted
                         )
+                    }
+
+                    // Mock ID card (standard ~1.586:1 card aspect ratio) centered on the sheet.
+                    Surface(
+                        modifier = Modifier
+                            .align(Alignment.Center)
+                            .width(220.dp)
+                            .height(139.dp)
+                            .clip(RoundedCornerShape(14.dp))
+                            .border(1.dp, idMockBorder, RoundedCornerShape(14.dp)),
+                        color = idMockFill,
+                        shadowElevation = 3.dp
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .padding(16.dp),
+                            verticalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Filled.CreditCard,
+                                    contentDescription = null,
+                                    tint = primaryBlue,
+                                    modifier = Modifier.size(24.dp)
+                                )
+                                Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                                    Box(
+                                        Modifier
+                                            .width(72.dp)
+                                            .height(6.dp)
+                                            .clip(RoundedCornerShape(3.dp))
+                                            .background(idMockLineStrong)
+                                    )
+                                    Box(
+                                        Modifier
+                                            .width(48.dp)
+                                            .height(6.dp)
+                                            .clip(RoundedCornerShape(3.dp))
+                                            .background(idMockLineSoft)
+                                    )
+                                }
+                            }
+                            Box(
+                                Modifier
+                                    .width(112.dp)
+                                    .height(6.dp)
+                                    .clip(RoundedCornerShape(3.dp))
+                                    .background(idMockLineSoft)
+                            )
+                        }
                     }
                 }
             }
@@ -1142,13 +1208,21 @@ fun IdCardFeatureScreen(
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 tabs.forEach { tab ->
+                    val selected = selectedType == tab
                     FilterChip(
-                        selected = selectedType == tab,
+                        selected = selected,
                         onClick = { onSelectType(tab) },
-                        label = { Text(text = tab) },
+                        label = {
+                            Text(
+                                text = tab,
+                                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal
+                            )
+                        },
                         colors = FilterChipDefaults.filterChipColors(
-                            containerColor = if (selectedType == tab) Color(0xFF1E88E5) else Color(0xFF202124),
-                            labelColor = if (selectedType == tab) Color.White else Color(0xFF9AA0AB)
+                            containerColor = chipUnselectedBg,
+                            labelColor = chipUnselectedLabel,
+                            selectedContainerColor = primaryBlue,
+                            selectedLabelColor = Color.White
                         )
                     )
                 }
@@ -1157,19 +1231,19 @@ fun IdCardFeatureScreen(
             Text(
                 text = "Create and share ID copies for various situations, including banking, administration, and more.",
                 style = MaterialTheme.typography.bodyMedium,
-                color = Color(0xFFB0BEC5)
+                color = textMuted
             )
             TextButton(onClick = { /* Learn more action can be added later */ }) {
                 Text(
                     text = "Learn more >",
-                    color = Color(0xFF64B5F6)
+                    color = primaryBlue
                 )
             }
 
             if (!validationMessage.isNullOrBlank()) {
                 Text(
                     text = validationMessage,
-                    color = Color(0xFFFF8A80),
+                    color = Color(0xFFD32F2F),
                     style = MaterialTheme.typography.bodySmall,
                     modifier = Modifier.padding(vertical = 4.dp)
                 )
@@ -1181,9 +1255,14 @@ fun IdCardFeatureScreen(
                 onClick = onMakeItNow,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(52.dp)
+                    .height(52.dp),
+                shape = RoundedCornerShape(14.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = primaryBlue,
+                    contentColor = Color.White
+                )
             ) {
-                Text(text = "Make it now")
+                Text(text = "Make it now", fontWeight = FontWeight.SemiBold)
             }
         }
     }
