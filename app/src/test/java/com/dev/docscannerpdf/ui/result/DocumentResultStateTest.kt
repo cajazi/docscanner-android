@@ -156,4 +156,33 @@ class DocumentResultStateTest {
         assertFalse(withoutTextActions.isPdfEnabled)
         assertEquals(withoutTextActions, withoutText.availableActions())
     }
+
+    @Test
+    fun localPreviewUriEnablesPdfExportWhenNoBackendImageExists() {
+        val state = DocumentResultState(localPreviewUri = "content://media/local-preview.jpg")
+
+        assertTrue(state.hasExportableImage)
+        assertTrue(state.availableActions().isPdfEnabled)
+    }
+
+    @Test
+    fun localCroppedUriEnablesPdfExportWhenNoBackendImageExists() {
+        val state = DocumentResultState(localCroppedUri = "file:///data/local-cropped.jpg")
+
+        assertTrue(state.hasExportableImage)
+        assertTrue(state.availableActions().isPdfEnabled)
+    }
+
+    @Test
+    fun noExportableImageKeepsPdfExportDisabled() {
+        val state = DocumentResultState(
+            enhancedImageUrl = "   ",
+            processedImageUrl = "",
+            localPreviewUri = null,
+            localCroppedUri = null
+        )
+
+        assertFalse(state.hasExportableImage)
+        assertFalse(state.availableActions().isPdfEnabled)
+    }
 }

@@ -1313,7 +1313,10 @@ class MainActivity : FragmentActivity() {
             AnnotationHomographyMapper.applyQuadTransform(storedAnnotations, sourceQuad = quad)
         } ?: storedAnnotations
         // A locally applied crop overrides the backend image for export, too.
-        val croppedImage = state.localCroppedUri
+        val croppedImage = state.localCroppedUri?.takeIf { it.isNotBlank() }
+        // Before the backend has produced an image, fall back to the on-device preview so
+        // ID-card scans (PR #22) that only have a local image are still exportable.
+        val localFallbackImage = state.localPreviewUri?.takeIf { it.isNotBlank() }
         val title = importedImagePreview?.title ?: "Searchable PDF"
 
         lifecycleScope.launch {
@@ -1322,8 +1325,10 @@ class MainActivity : FragmentActivity() {
             val pages = listOf(
                 PdfExportPageInput(
                     pageNumber = 1,
-                    enhancedImageUrl = if (croppedImage.isNullOrBlank()) state.enhancedImageUrl else null,
-                    processedImageUrl = croppedImage ?: state.processedImageUrl,
+                    enhancedImageUrl = if (croppedImage == null) state.enhancedImageUrl else null,
+                    processedImageUrl = croppedImage
+                        ?: state.processedImageUrl?.takeIf { it.isNotBlank() }
+                        ?: localFallbackImage,
                     ocrText = resolvedText,
                     annotations = annotations,
                     textSpans = textSpans
