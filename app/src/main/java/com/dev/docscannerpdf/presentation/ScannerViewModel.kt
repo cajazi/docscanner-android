@@ -16,6 +16,7 @@ import com.dev.docscannerpdf.data.repository.DocumentRepository
 import com.dev.docscannerpdf.data.repository.FolderRepository
 import com.dev.docscannerpdf.data.repository.TagRepository
 import com.dev.docscannerpdf.domain.analytics.AnalyticsRepository
+import com.dev.docscannerpdf.domain.idscan.IdScanPostProcessor
 import com.dev.docscannerpdf.domain.ocr.TransformedOCRBox
 import com.google.android.gms.tasks.Task
 import com.google.mlkit.vision.documentscanner.GmsDocumentScanningResult
@@ -253,10 +254,20 @@ class ScannerViewModel(
                     AnalyticsRepository.EVENT_SCAN_CREATED,
                     mapOf("page_count" to document.pageCount)
                 )
+                val rawPageUri = result.pages?.firstOrNull()?.imageUri
+                // ID card scans only: run the ML Kit page image through the offline post-
+                // processor for a tighter, sharper crop before OCR. Best-effort — any failure
+                // here just falls back to the original ML Kit page image, so this can never
+                // block or change the rest of the existing save/OCR flow.
+                val ocrSourceUri = if (isIdCardScan && rawPageUri != null) {
+                    enhanceIdScanImage(activity.applicationContext, rawPageUri) ?: rawPageUri
+                } else {
+                    rawPageUri
+                }
                 saveExtractedTextIfAvailable(
                     context = activity.applicationContext,
                     document = document.copy(id = documentId),
-                    imageUri = result.pages?.firstOrNull()?.imageUri
+                    imageUri = ocrSourceUri
                 )
                 _uiState.update {
                     it.copy(
@@ -279,6 +290,26 @@ class ScannerViewModel(
             }
         }
     }
+
+    /**
+     * Runs [sourceUri] (the raw ML Kit ID-card page image) through [IdScanPostProcessor] and
+     * returns the enhanced image's local [Uri], or null if anything fails. Saved under this
+     * app's own private files directory only — never external storage — and never logs the
+     * scanned content itself, only the failure reason on a non-fatal report.
+     */
+    private suspend fun enhanceIdScanImage(context: Context, sourceUri: Uri): Uri? =
+        runCatching {
+            IdScanPostProcessor.processUri(
+                context = context,
+                sourceUri = sourceUri,
+                outputDirectory = File(context.filesDir, "id_scan_enhanced")
+            )
+        }.onFailure { throwable ->
+            analyticsRepository.recordNonFatal(
+                throwable = throwable,
+                area = "id_scan_post_process"
+            )
+        }.getOrNull()
 
     fun importImage(
         context: Context,
