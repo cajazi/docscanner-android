@@ -145,6 +145,24 @@ class PdfExportPlannerTest {
     }
 
     @Test
+    fun localContentUriIsUsableAsTheProcessedFallbackImage() {
+        // ID-card scans without a backend image yet route the local preview/cropped URI
+        // through the processed slot; the planner treats it like any other image string.
+        val selection = PdfExportPlanner.selectImage(
+            PdfExportPageInput(
+                pageNumber = 1,
+                processedImageUrl = "content://com.dev.docscannerpdf.fileprovider/local-preview.jpg"
+            )
+        )
+
+        assertEquals(
+            "content://com.dev.docscannerpdf.fileprovider/local-preview.jpg" to
+                PdfExportImageSource.PROCESSED,
+            selection
+        )
+    }
+
+    @Test
     fun selectImageReturnsNullWhenNoUsableImageExists() {
         assertNull(
             PdfExportPlanner.selectImage(

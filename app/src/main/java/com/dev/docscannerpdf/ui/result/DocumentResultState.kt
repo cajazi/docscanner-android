@@ -92,9 +92,16 @@ data class DocumentResultActions(
     val isPdfEnabled: Boolean
 )
 
-/** True when a backend page image exists to render a searchable PDF from. */
+/**
+ * True when an image exists to render a searchable PDF from: a backend page image
+ * (enhanced/processed) or, when the backend hasn't produced one yet, the locally captured
+ * preview/cropped image the result screen is already showing.
+ */
 val DocumentResultState.hasExportableImage: Boolean
-    get() = !enhancedImageUrl.isNullOrBlank() || !processedImageUrl.isNullOrBlank()
+    get() = !enhancedImageUrl.isNullOrBlank() ||
+        !processedImageUrl.isNullOrBlank() ||
+        !localCroppedUri.isNullOrBlank() ||
+        !localPreviewUri.isNullOrBlank()
 
 fun DocumentResultState.availableActions(): DocumentResultActions {
     val hasText = hasOcrText
