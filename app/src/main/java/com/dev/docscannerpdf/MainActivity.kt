@@ -104,6 +104,7 @@ import com.dev.docscannerpdf.domain.crop.CropReducer
 import com.dev.docscannerpdf.domain.crop.CropState
 import com.dev.docscannerpdf.domain.crop.PerspectiveQuad
 import com.dev.docscannerpdf.domain.detection.LiveFrameAnalyzer
+import com.dev.docscannerpdf.domain.idscan.IdScanPostProcessor
 import com.dev.docscannerpdf.ui.crop.CropImageProcessor
 import com.dev.docscannerpdf.ui.detection.LumaFrameFactory
 import com.dev.docscannerpdf.ui.DocScannerApp
@@ -270,9 +271,12 @@ class MainActivity : FragmentActivity() {
     internal val documentScannerLauncher = registerForActivityResult(
         ActivityResultContracts.StartIntentSenderForResult()
     ) { result ->
+        val scanTitlePrefix = pendingScanTitlePrefix
+        val isIdCardScan = pendingScanIsIdCardScan
         if (result.resultCode == Activity.RESULT_OK) {
             val scanResult = GmsDocumentScanningResult.fromActivityResultIntent(result.data)
             val previewPageUri = scanResult?.pages?.firstOrNull()?.imageUri
+            val previewTitle = "$scanTitlePrefix ${SimpleDateFormat("dd-MM-yyyy HH.mm", Locale.getDefault()).format(Date())}"
             if (previewPageUri != null) {
                 imageImportReview = null
                 pendingImageImport = null
@@ -282,15 +286,49 @@ class MainActivity : FragmentActivity() {
                 documentResultState = null
                 importedImagePreview = PendingImageImport(
                     imageUri = previewPageUri,
-                    title = "$pendingScanTitlePrefix ${SimpleDateFormat("dd-MM-yyyy HH.mm", Locale.getDefault()).format(Date())}"
+                    title = previewTitle
                 )
+                if (isIdCardScan) {
+                    enhanceIdScanPreviewImage(
+                        rawPreviewUri = previewPageUri,
+                        previewTitle = previewTitle
+                    )
+                }
             }
-            viewModel.handleScanResult(this, scanResult, pendingScanTitlePrefix, pendingScanIsIdCardScan)
+            viewModel.handleScanResult(this, scanResult, scanTitlePrefix, isIdCardScan)
         } else {
             viewModel.showError("Scan canceled.")
         }
         pendingScanTitlePrefix = DEFAULT_SCAN_TITLE_PREFIX
         pendingScanIsIdCardScan = false
+    }
+
+    private fun enhanceIdScanPreviewImage(rawPreviewUri: Uri, previewTitle: String) {
+        lifecycleScope.launch {
+            val enhancedUriResult = runCatching {
+                IdScanPostProcessor.processUri(
+                    context = this@MainActivity,
+                    sourceUri = rawPreviewUri,
+                    outputDirectory = File(filesDir, "id_scan_preview")
+                )
+            }
+            val enhancedUri = enhancedUriResult.getOrNull()
+            if (enhancedUri == null) {
+                val throwable = enhancedUriResult.exceptionOrNull()
+                    ?: IllegalStateException("ID scan preview enhancement returned no image.")
+                Log.w(TAG, "Unable to enhance ID scan preview.")
+                recordFailure("id_scan_preview_enhance", throwable)
+                return@launch
+            }
+
+            val currentPreview = importedImagePreview
+            if (currentPreview?.imageUri == rawPreviewUri && currentPreview.title == previewTitle) {
+                importedImagePreview = currentPreview.copy(imageUri = enhancedUri)
+                if (documentResultState?.localPreviewUri == rawPreviewUri.toString()) {
+                    documentResultState = documentResultState?.copy(localPreviewUri = enhancedUri.toString())
+                }
+            }
+        }
     }
 
     internal val imageImportLauncher = registerForActivityResult(
