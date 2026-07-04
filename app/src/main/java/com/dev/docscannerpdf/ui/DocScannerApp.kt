@@ -567,6 +567,7 @@ internal fun DocScannerApp(host: MainActivity) {
                         imageUri = previewState.imageUri,
                         title = previewState.title,
                         rotationDegrees = previewState.rotationDegrees,
+                        backImageUri = previewState.backImageUri,
                         backendProcessingState = host.scannerBackendProcessingState,
                         validationState = host.scannerFlowValidationState,
                         onProcessWithBackend = host::processImportedPreviewWithBackend,
@@ -641,7 +642,8 @@ internal fun DocScannerApp(host: MainActivity) {
                                 host.idCardValidationMessage = null
                                 host.showIdCardFlow = false
                                 host.startDocumentScanner(
-                                    pageLimit = 1,
+                                    // ID cards have a front and an optional back — up to 2 pages.
+                                    pageLimit = 2,
                                     titlePrefix = "$host.selectedIdCardCategory Scan",
                                     galleryImportAllowed = true,
                                     scannerMode = GmsDocumentScannerOptions.SCANNER_MODE_BASE_WITH_FILTER,

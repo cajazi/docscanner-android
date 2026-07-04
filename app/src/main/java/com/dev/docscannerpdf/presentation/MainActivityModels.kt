@@ -51,7 +51,10 @@ data class PendingImageImport(
     val title: String = "Imported Image",
     val extractedText: String? = null,
     val isExtractingText: Boolean = false,
-    val rotationDegrees: Float = 0f
+    val rotationDegrees: Float = 0f,
+    // The back side of an ID-card scan, when the user captured one. Null for every other
+    // scan/import flow — normal documents only ever have [imageUri].
+    val backImageUri: Uri? = null
 )
 
 data class PendingImageReview(

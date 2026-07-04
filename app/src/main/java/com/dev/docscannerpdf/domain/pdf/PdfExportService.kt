@@ -64,6 +64,97 @@ class PdfExportService(
         }
     }
 
+    /**
+     * Renders an ID-card front/back export: both sides are arranged on a single A4 page
+     * (front on top, back below when captured) rather than as separate PDF pages, mirroring
+     * how a physical card is presented. [input.ocrText] — already resolved from the front
+     * image by the caller — is embedded as the usual invisible searchable layer.
+     */
+    suspend fun exportIdCard(
+        input: IdCardPdfInput,
+        fileName: String
+    ): Result = withContext(Dispatchers.IO) {
+        when (val plan = IdCardPdfPlanner.plan(input)) {
+            is IdCardPdfPlan.Invalid -> Result.Failure(plan.reason)
+            is IdCardPdfPlan.Ready -> runCatching { renderIdCard(plan, fileName) }
+                .getOrElse { throwable ->
+                    Result.Failure(throwable.message ?: "Unable to export ID card PDF.")
+                }
+        }
+    }
+
+    private suspend fun renderIdCard(plan: IdCardPdfPlan.Ready, fileName: String): Result {
+        if (!outputDirectory.exists()) outputDirectory.mkdirs()
+        val outputFile = uniqueFile(outputDirectory, sanitizeFileName(fileName))
+        val pdfDocument = PdfDocument()
+        try {
+            val pageInfo = PdfDocument.PageInfo.Builder(
+                AppConstants.A4_WIDTH_POINTS,
+                AppConstants.A4_HEIGHT_POINTS,
+                1
+            ).create()
+            val pdfPage = pdfDocument.startPage(pageInfo)
+            val canvas = pdfPage.canvas
+            canvas.drawColor(Color.WHITE)
+            // Each side gets an equal, stacked slot on the page — front on top, back below.
+            val slotHeight = AppConstants.A4_HEIGHT_POINTS.toFloat() / plan.sides.size
+            plan.sides.forEachIndexed { index, side ->
+                val bitmap = imageLoader.load(side.imageUrl)
+                    ?: throw IllegalStateException(
+                        "Unable to load the ${side.side.name.lowercase()} image."
+                    )
+                try {
+                    drawSideInSlot(canvas, bitmap, side.side, topOffset = index * slotHeight, slotHeight = slotHeight)
+                } finally {
+                    bitmap.recycle()
+                }
+            }
+            plan.ocrText?.let { drawInvisibleTextLayer(canvas, it) }
+            pdfDocument.finishPage(pdfPage)
+            outputFile.outputStream().use { output -> pdfDocument.writeTo(output) }
+        } finally {
+            pdfDocument.close()
+        }
+
+        val uri = fileProviderUri(outputFile) ?: Uri.fromFile(outputFile)
+        return Result.Success(uri = uri, file = outputFile, pageCount = 1)
+    }
+
+    /**
+     * Draws [bitmap] scaled to fit within a full-width slot of [slotHeight] starting at
+     * [topOffset], then labels it with [side]'s name. Reuses [PdfCoordinateMapper] with the
+     * slot's own height so the same centered-fit rule the single-image export uses applies
+     * per slot, just translated down the page.
+     */
+    private fun drawSideInSlot(
+        canvas: Canvas,
+        bitmap: Bitmap,
+        side: IdCardSide,
+        topOffset: Float,
+        slotHeight: Float
+    ) {
+        val slotRect = PdfCoordinateMapper.imageDestinationRect(
+            pageWidth = AppConstants.A4_WIDTH_POINTS.toFloat(),
+            pageHeight = slotHeight,
+            imageWidth = bitmap.width,
+            imageHeight = bitmap.height
+        )
+        val destination = android.graphics.RectF(
+            slotRect.left,
+            slotRect.top + topOffset,
+            slotRect.right,
+            slotRect.bottom + topOffset
+        )
+        canvas.drawBitmap(bitmap, null, destination, Paint(Paint.ANTI_ALIAS_FLAG))
+        val labelPaint = Paint().apply {
+            color = Color.DKGRAY
+            textSize = SIDE_LABEL_TEXT_SIZE
+            isAntiAlias = true
+        }
+        val label = side.name.lowercase().replaceFirstChar { it.uppercase() }
+        canvas.drawText(label, SEARCHABLE_TEXT_MARGIN, topOffset + SIDE_LABEL_TEXT_SIZE + 4f, labelPaint)
+    }
+
     private suspend fun render(pages: List<PdfExportPagePlan>, fileName: String): Result {
         if (!outputDirectory.exists()) outputDirectory.mkdirs()
         val outputFile = uniqueFile(outputDirectory, sanitizeFileName(fileName))
@@ -269,6 +360,7 @@ class PdfExportService(
     private companion object {
         const val SEARCHABLE_TEXT_SIZE = 10f
         const val SEARCHABLE_TEXT_MARGIN = 24f
+        const val SIDE_LABEL_TEXT_SIZE = 12f
     }
 }
 

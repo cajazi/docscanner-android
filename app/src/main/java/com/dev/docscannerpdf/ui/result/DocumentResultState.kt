@@ -38,6 +38,9 @@ data class DocumentResultState(
     // A locally warped (perspective-corrected) image that overrides the backend image for
     // display and export. Stays null until the user applies a crop.
     val localCroppedUri: String? = null,
+    // The back side of an ID-card scan, when the user captured one. Stays null for every
+    // other flow and for single-sided ID-card scans.
+    val localBackPreviewUri: String? = null,
     val ocrText: String? = null,
     val ocrStatus: ResultOcrStatus = ResultOcrStatus.PENDING,
     val processingStatus: String? = null,

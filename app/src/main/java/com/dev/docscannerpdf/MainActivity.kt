@@ -61,6 +61,7 @@ import com.dev.docscannerpdf.domain.annotation.AnnotationRepository
 import com.dev.docscannerpdf.domain.annotation.AnnotationStroke
 import com.dev.docscannerpdf.domain.annotation.AnnotationTool
 import com.dev.docscannerpdf.domain.annotation.PageAnnotationState
+import com.dev.docscannerpdf.domain.pdf.IdCardPdfInput
 import com.dev.docscannerpdf.domain.pdf.PdfCoordinateMapper
 import com.dev.docscannerpdf.domain.pdf.PdfExportPageInput
 import com.dev.docscannerpdf.domain.pdf.PdfExportService
@@ -275,7 +276,10 @@ class MainActivity : FragmentActivity() {
         val isIdCardScan = pendingScanIsIdCardScan
         if (result.resultCode == Activity.RESULT_OK) {
             val scanResult = GmsDocumentScanningResult.fromActivityResultIntent(result.data)
-            val previewPageUri = scanResult?.pages?.firstOrNull()?.imageUri
+            val scannedPages = scanResult?.pages
+            val previewPageUri = scannedPages?.firstOrNull()?.imageUri
+            // ID cards may capture a second page for the back; every other scan stays single-page.
+            val backPageUri = if (isIdCardScan) scannedPages?.getOrNull(1)?.imageUri else null
             val previewTitle = "$scanTitlePrefix ${SimpleDateFormat("dd-MM-yyyy HH.mm", Locale.getDefault()).format(Date())}"
             if (previewPageUri != null) {
                 imageImportReview = null
@@ -286,13 +290,21 @@ class MainActivity : FragmentActivity() {
                 documentResultState = null
                 importedImagePreview = PendingImageImport(
                     imageUri = previewPageUri,
-                    title = previewTitle
+                    title = previewTitle,
+                    backImageUri = backPageUri
                 )
                 if (isIdCardScan) {
                     enhanceIdScanPreviewImage(
                         rawPreviewUri = previewPageUri,
                         previewTitle = previewTitle
                     )
+                    if (backPageUri != null) {
+                        enhanceIdScanPreviewImage(
+                            rawPreviewUri = backPageUri,
+                            previewTitle = previewTitle,
+                            isBackSide = true
+                        )
+                    }
                 }
             }
             viewModel.handleScanResult(this, scanResult, scanTitlePrefix, isIdCardScan)
@@ -303,13 +315,23 @@ class MainActivity : FragmentActivity() {
         pendingScanIsIdCardScan = false
     }
 
-    private fun enhanceIdScanPreviewImage(rawPreviewUri: Uri, previewTitle: String) {
+    /**
+     * Best-effort local enhancement of a raw ML Kit ID-card page image ([rawPreviewUri]) for
+     * the preview/export shown on screen. Never blocks or fails the scan flow itself — if
+     * enhancement throws or returns nothing, the original ML Kit image simply stays in place.
+     * [isBackSide] routes the result to the back-side fields instead of the front ones.
+     */
+    private fun enhanceIdScanPreviewImage(
+        rawPreviewUri: Uri,
+        previewTitle: String,
+        isBackSide: Boolean = false
+    ) {
         lifecycleScope.launch {
             val enhancedUriResult = runCatching {
                 IdScanPostProcessor.processUri(
                     context = this@MainActivity,
                     sourceUri = rawPreviewUri,
-                    outputDirectory = File(filesDir, "id_scan_preview")
+                    outputDirectory = File(filesDir, if (isBackSide) "id_scan_preview_back" else "id_scan_preview")
                 )
             }
             val enhancedUri = enhancedUriResult.getOrNull()
@@ -321,8 +343,16 @@ class MainActivity : FragmentActivity() {
                 return@launch
             }
 
-            val currentPreview = importedImagePreview
-            if (currentPreview?.imageUri == rawPreviewUri && currentPreview.title == previewTitle) {
+            val currentPreview = importedImagePreview ?: return@launch
+            if (currentPreview.title != previewTitle) return@launch
+            if (isBackSide) {
+                if (currentPreview.backImageUri == rawPreviewUri) {
+                    importedImagePreview = currentPreview.copy(backImageUri = enhancedUri)
+                    if (documentResultState?.localBackPreviewUri == rawPreviewUri.toString()) {
+                        documentResultState = documentResultState?.copy(localBackPreviewUri = enhancedUri.toString())
+                    }
+                }
+            } else if (currentPreview.imageUri == rawPreviewUri) {
                 importedImagePreview = currentPreview.copy(imageUri = enhancedUri)
                 if (documentResultState?.localPreviewUri == rawPreviewUri.toString()) {
                     documentResultState = documentResultState?.copy(localPreviewUri = enhancedUri.toString())
@@ -969,6 +999,7 @@ class MainActivity : FragmentActivity() {
         }
 
         val localPreviewUri = preview.imageUri.toString()
+        val localBackPreviewUri = preview.backImageUri?.toString()
         lifecycleScope.launch {
             scannerFlowValidationUseCase.validate(
                 context = this@MainActivity,
@@ -978,7 +1009,7 @@ class MainActivity : FragmentActivity() {
                     scannerFlowValidationState = state
                     // Keep the unified result screen live while it is open (e.g. on retry).
                     if (documentResultState != null) {
-                        documentResultState = state.toDocumentResultState(localPreviewUri)
+                        documentResultState = state.toDocumentResultState(localPreviewUri, localBackPreviewUri)
                     }
                 }
             )
@@ -992,7 +1023,8 @@ class MainActivity : FragmentActivity() {
     internal fun openDocumentResult() {
         val preview = importedImagePreview
         documentResultState = scannerFlowValidationState.toDocumentResultState(
-            localPreviewUri = preview?.imageUri?.toString()
+            localPreviewUri = preview?.imageUri?.toString(),
+            localBackPreviewUri = preview?.backImageUri?.toString()
         )
     }
 
@@ -1318,6 +1350,41 @@ class MainActivity : FragmentActivity() {
         // ID-card scans (PR #22) that only have a local image are still exportable.
         val localFallbackImage = state.localPreviewUri?.takeIf { it.isNotBlank() }
         val title = importedImagePreview?.title ?: "Searchable PDF"
+        // An ID-card back side, when present, means this export needs the front/back A4
+        // layout instead of the normal single-image searchable PDF.
+        val backImage = state.localBackPreviewUri?.takeIf { it.isNotBlank() }
+
+        if (backImage != null) {
+            val frontImage = croppedImage
+                ?: state.enhancedImageUrl?.takeIf { it.isNotBlank() }
+                ?: state.processedImageUrl?.takeIf { it.isNotBlank() }
+                ?: localFallbackImage
+            lifecycleScope.launch {
+                viewModel.showError("Exporting ID card PDF…")
+                val result = pdfExportService.exportIdCard(
+                    input = IdCardPdfInput(
+                        frontImageUrl = frontImage,
+                        backImageUrl = backImage,
+                        ocrText = resolvedText
+                    ),
+                    fileName = title
+                )
+                when (result) {
+                    is PdfExportService.Result.Success -> {
+                        viewModel.saveGeneratedPdfDocument(
+                            title = title,
+                            pageCount = result.pageCount,
+                            pdfUri = Uri.fromFile(result.file),
+                            extractedText = resolvedText
+                        )
+                        viewModel.showError("ID card PDF exported: ${result.file.name}")
+                    }
+                    is PdfExportService.Result.Failure ->
+                        viewModel.showError(result.message)
+                }
+            }
+            return
+        }
 
         lifecycleScope.launch {
             viewModel.showError("Exporting searchable PDF…")
