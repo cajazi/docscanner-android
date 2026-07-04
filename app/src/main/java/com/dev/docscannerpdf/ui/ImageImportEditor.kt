@@ -481,6 +481,9 @@ fun ImportedImageDocumentPreview(
     imageUri: Uri,
     title: String,
     rotationDegrees: Float,
+    // The back side of an ID-card scan, when the user captured one. Null for every other
+    // preview, which keeps the single-image layout unchanged.
+    backImageUri: Uri? = null,
     backendProcessingState: ScannerBackendProcessingState = ScannerBackendProcessingState.Idle,
     validationState: ScannerFlowValidationState = ScannerFlowValidationState(),
     onProcessWithBackend: () -> Unit = {},
@@ -619,34 +622,56 @@ fun ImportedImageDocumentPreview(
                     .padding(horizontal = 16.dp, vertical = 10.dp),
                 contentAlignment = Alignment.Center
             ) {
-                Surface(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .aspectRatio(1f / 1.414f),
-                    shape = RoundedCornerShape(0.dp),
-                    color = Color.White
-                ) {
-                    Box {
-                        ImportedImageBitmap(
-                            uri = imageUri,
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .graphicsLayer { rotationZ = rotationDegrees },
-                            contentScale = ContentScale.Fit
-                        )
-                        Surface(
-                            modifier = Modifier.align(Alignment.TopStart),
-                            color = Color.Black.copy(alpha = 0.62f),
-                            shape = RoundedCornerShape(bottomEnd = 3.dp)
-                        ) {
-                            Text(
-                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp),
-                                text = "1/1",
-                                color = Color.White,
-                                style = MaterialTheme.typography.labelLarge,
-                                fontWeight = FontWeight.Bold
+                if (backImageUri == null) {
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .aspectRatio(1f / 1.414f),
+                        shape = RoundedCornerShape(0.dp),
+                        color = Color.White
+                    ) {
+                        Box {
+                            ImportedImageBitmap(
+                                uri = imageUri,
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .graphicsLayer { rotationZ = rotationDegrees },
+                                contentScale = ContentScale.Fit
                             )
+                            Surface(
+                                modifier = Modifier.align(Alignment.TopStart),
+                                color = Color.Black.copy(alpha = 0.62f),
+                                shape = RoundedCornerShape(bottomEnd = 3.dp)
+                            ) {
+                                Text(
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp),
+                                    text = "1/1",
+                                    color = Color.White,
+                                    style = MaterialTheme.typography.labelLarge,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
                         }
+                    }
+                } else {
+                    // ID-card scan with both sides captured: show front and back stacked on
+                    // the same A4-style preview surface, each clearly labeled.
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        IdCardSidePreviewTile(
+                            imageUri = imageUri,
+                            rotationDegrees = rotationDegrees,
+                            label = "Front",
+                            modifier = Modifier.weight(1f)
+                        )
+                        IdCardSidePreviewTile(
+                            imageUri = backImageUri,
+                            rotationDegrees = rotationDegrees,
+                            label = "Back",
+                            modifier = Modifier.weight(1f)
+                        )
                     }
                 }
             }
@@ -680,6 +705,44 @@ fun ImportedImageDocumentPreview(
                         fontWeight = FontWeight.SemiBold
                     )
                 }
+            }
+        }
+    }
+}
+
+/** One labeled side tile ("Front" or "Back") used to show an ID card's two captured sides. */
+@Composable
+private fun IdCardSidePreviewTile(
+    imageUri: Uri,
+    rotationDegrees: Float,
+    label: String,
+    modifier: Modifier = Modifier
+) {
+    Surface(
+        modifier = modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(0.dp),
+        color = Color.White
+    ) {
+        Box {
+            ImportedImageBitmap(
+                uri = imageUri,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .graphicsLayer { rotationZ = rotationDegrees },
+                contentScale = ContentScale.Fit
+            )
+            Surface(
+                modifier = Modifier.align(Alignment.TopStart),
+                color = Color.Black.copy(alpha = 0.62f),
+                shape = RoundedCornerShape(bottomEnd = 3.dp)
+            ) {
+                Text(
+                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp),
+                    text = label,
+                    color = Color.White,
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.Bold
+                )
             }
         }
     }

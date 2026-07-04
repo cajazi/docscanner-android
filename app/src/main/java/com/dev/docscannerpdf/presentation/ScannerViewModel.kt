@@ -16,6 +16,7 @@ import com.dev.docscannerpdf.data.repository.DocumentRepository
 import com.dev.docscannerpdf.data.repository.FolderRepository
 import com.dev.docscannerpdf.data.repository.TagRepository
 import com.dev.docscannerpdf.domain.analytics.AnalyticsRepository
+import com.dev.docscannerpdf.domain.idscan.IdCardScanRules
 import com.dev.docscannerpdf.domain.idscan.IdScanPostProcessor
 import com.dev.docscannerpdf.domain.ocr.TransformedOCRBox
 import com.google.android.gms.tasks.Task
@@ -229,9 +230,9 @@ class ScannerViewModel(
 
         if (isIdCardScan) {
             val pageCount = result.pages?.size ?: 0
-            if (pageCount != 1) {
+            if (!IdCardScanRules.isValidPageCount(pageCount)) {
                 _uiState.update {
-                    it.copy(errorMessage = "ID card scans must capture exactly one card page.")
+                    it.copy(errorMessage = "ID card scans must capture a front page and, optionally, a back page.")
                 }
                 return
             }

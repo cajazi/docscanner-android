@@ -12,7 +12,8 @@ import com.dev.docscannerpdf.process.ScannerOcrStatus
  * expose them separately — nothing is invented to fill them.
  */
 fun ScannerFlowValidationState.toDocumentResultState(
-    localPreviewUri: String?
+    localPreviewUri: String?,
+    localBackPreviewUri: String? = null
 ): DocumentResultState {
     return DocumentResultState(
         documentId = documentId,
@@ -20,6 +21,7 @@ fun ScannerFlowValidationState.toDocumentResultState(
         processJobId = processJobId,
         processedImageUrl = processedImageUrl,
         localPreviewUri = localPreviewUri,
+        localBackPreviewUri = localBackPreviewUri,
         ocrText = ocrTextPreview,
         ocrStatus = ocrStatus.toResultOcrStatus(),
         processingStatus = statusMessage,
