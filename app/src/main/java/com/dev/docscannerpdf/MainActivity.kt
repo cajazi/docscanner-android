@@ -291,7 +291,8 @@ class MainActivity : FragmentActivity() {
                 importedImagePreview = PendingImageImport(
                     imageUri = previewPageUri,
                     title = previewTitle,
-                    backImageUri = backPageUri
+                    backImageUri = backPageUri,
+                    isIdCardScan = isIdCardScan
                 )
                 if (isIdCardScan) {
                     enhanceIdScanPreviewImage(
@@ -1350,11 +1351,12 @@ class MainActivity : FragmentActivity() {
         // ID-card scans (PR #22) that only have a local image are still exportable.
         val localFallbackImage = state.localPreviewUri?.takeIf { it.isNotBlank() }
         val title = importedImagePreview?.title ?: "Searchable PDF"
-        // An ID-card back side, when present, means this export needs the front/back A4
-        // layout instead of the normal single-image searchable PDF.
         val backImage = state.localBackPreviewUri?.takeIf { it.isNotBlank() }
+        // An ID-card scan always needs the card-sized A4 layout instead of the normal
+        // full-page searchable PDF, whether or not a back side was captured.
+        val isIdCardScan = importedImagePreview?.isIdCardScan == true
 
-        if (backImage != null) {
+        if (isIdCardScan) {
             val frontImage = croppedImage
                 ?: state.enhancedImageUrl?.takeIf { it.isNotBlank() }
                 ?: state.processedImageUrl?.takeIf { it.isNotBlank() }

@@ -568,6 +568,7 @@ internal fun DocScannerApp(host: MainActivity) {
                         title = previewState.title,
                         rotationDegrees = previewState.rotationDegrees,
                         backImageUri = previewState.backImageUri,
+                        isIdCardScan = previewState.isIdCardScan,
                         backendProcessingState = host.scannerBackendProcessingState,
                         validationState = host.scannerFlowValidationState,
                         onProcessWithBackend = host::processImportedPreviewWithBackend,
