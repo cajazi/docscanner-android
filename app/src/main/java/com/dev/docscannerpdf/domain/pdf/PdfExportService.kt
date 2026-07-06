@@ -96,15 +96,21 @@ class PdfExportService(
             val pdfPage = pdfDocument.startPage(pageInfo)
             val canvas = pdfPage.canvas
             canvas.drawColor(Color.WHITE)
-            // Each side gets an equal, stacked slot on the page — front on top, back below.
-            val slotHeight = AppConstants.A4_HEIGHT_POINTS.toFloat() / plan.sides.size
+            // Fixed, same-size, ID-card-shaped rects — front above back, centered as a group —
+            // rather than a naive "page height / side count" slot that stretches each side into
+            // a full document-page-sized area.
+            val cardRects = IdCardLayoutPlanner.plan(
+                sideCount = plan.sides.size,
+                pageWidth = AppConstants.A4_WIDTH_POINTS.toFloat(),
+                pageHeight = AppConstants.A4_HEIGHT_POINTS.toFloat()
+            )
             plan.sides.forEachIndexed { index, side ->
                 val bitmap = imageLoader.load(side.imageUrl)
                     ?: throw IllegalStateException(
                         "Unable to load the ${side.side.name.lowercase()} image."
                     )
                 try {
-                    drawSideInSlot(canvas, bitmap, side.side, topOffset = index * slotHeight, slotHeight = slotHeight)
+                    drawSideInRect(canvas, bitmap, side.side, cardRects[index])
                 } finally {
                     bitmap.recycle()
                 }
@@ -121,29 +127,28 @@ class PdfExportService(
     }
 
     /**
-     * Draws [bitmap] scaled to fit within a full-width slot of [slotHeight] starting at
-     * [topOffset], then labels it with [side]'s name. Reuses [PdfCoordinateMapper] with the
-     * slot's own height so the same centered-fit rule the single-image export uses applies
-     * per slot, just translated down the page.
+     * Draws [bitmap] scaled to fit (never stretched) within the fixed, ID-card-shaped [rect],
+     * then labels it with [side]'s name just above the card. Reusing [PdfCoordinateMapper] scoped
+     * to the card rect keeps front and back on the exact same centered-fit rule the single-image
+     * export uses, just confined to a card-sized box instead of the whole page.
      */
-    private fun drawSideInSlot(
+    private fun drawSideInRect(
         canvas: Canvas,
         bitmap: Bitmap,
         side: IdCardSide,
-        topOffset: Float,
-        slotHeight: Float
+        rect: CardRect
     ) {
-        val slotRect = PdfCoordinateMapper.imageDestinationRect(
-            pageWidth = AppConstants.A4_WIDTH_POINTS.toFloat(),
-            pageHeight = slotHeight,
+        val fitted = PdfCoordinateMapper.imageDestinationRect(
+            pageWidth = rect.width,
+            pageHeight = rect.height,
             imageWidth = bitmap.width,
             imageHeight = bitmap.height
         )
         val destination = android.graphics.RectF(
-            slotRect.left,
-            slotRect.top + topOffset,
-            slotRect.right,
-            slotRect.bottom + topOffset
+            rect.left + fitted.left,
+            rect.top + fitted.top,
+            rect.left + fitted.right,
+            rect.top + fitted.bottom
         )
         canvas.drawBitmap(bitmap, null, destination, Paint(Paint.ANTI_ALIAS_FLAG))
         val labelPaint = Paint().apply {
@@ -152,7 +157,7 @@ class PdfExportService(
             isAntiAlias = true
         }
         val label = side.name.lowercase().replaceFirstChar { it.uppercase() }
-        canvas.drawText(label, SEARCHABLE_TEXT_MARGIN, topOffset + SIDE_LABEL_TEXT_SIZE + 4f, labelPaint)
+        canvas.drawText(label, rect.left, rect.top - 6f, labelPaint)
     }
 
     private suspend fun render(pages: List<PdfExportPagePlan>, fileName: String): Result {

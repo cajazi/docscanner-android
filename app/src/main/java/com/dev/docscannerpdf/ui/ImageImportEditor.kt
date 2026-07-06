@@ -10,6 +10,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -19,6 +20,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
@@ -83,6 +85,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -90,6 +93,8 @@ import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.runtime.mutableStateListOf
+import com.dev.docscannerpdf.domain.pdf.CardRect
+import com.dev.docscannerpdf.domain.pdf.IdCardLayoutPlanner
 import com.dev.docscannerpdf.process.ScannerBackendProcessingState
 import com.dev.docscannerpdf.process.ScannerFlowStage
 import com.dev.docscannerpdf.process.ScannerFlowValidationState
@@ -484,6 +489,9 @@ fun ImportedImageDocumentPreview(
     // The back side of an ID-card scan, when the user captured one. Null for every other
     // preview, which keeps the single-image layout unchanged.
     backImageUri: Uri? = null,
+    // True for an ID-card scan (front-only or front+back). Normal document previews leave this
+    // false and keep the existing full-page layout unchanged.
+    isIdCardScan: Boolean = false,
     backendProcessingState: ScannerBackendProcessingState = ScannerBackendProcessingState.Idle,
     validationState: ScannerFlowValidationState = ScannerFlowValidationState(),
     onProcessWithBackend: () -> Unit = {},
@@ -622,7 +630,7 @@ fun ImportedImageDocumentPreview(
                     .padding(horizontal = 16.dp, vertical = 10.dp),
                 contentAlignment = Alignment.Center
             ) {
-                if (backImageUri == null) {
+                if (!isIdCardScan) {
                     Surface(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -654,25 +662,15 @@ fun ImportedImageDocumentPreview(
                         }
                     }
                 } else {
-                    // ID-card scan with both sides captured: show front and back stacked on
-                    // the same A4-style preview surface, each clearly labeled.
-                    Column(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalArrangement = Arrangement.spacedBy(10.dp)
-                    ) {
-                        IdCardSidePreviewTile(
-                            imageUri = imageUri,
-                            rotationDegrees = rotationDegrees,
-                            label = "Front",
-                            modifier = Modifier.weight(1f)
-                        )
-                        IdCardSidePreviewTile(
-                            imageUri = backImageUri,
-                            rotationDegrees = rotationDegrees,
-                            label = "Back",
-                            modifier = Modifier.weight(1f)
-                        )
-                    }
+                    // ID-card scan: front (and back, when captured) laid out as same-size,
+                    // ID-card-shaped tiles centered on one A4-style white page, matching
+                    // CamScanner's card layout rather than stretching each side into a
+                    // document-page-sized half.
+                    IdCardStackPreview(
+                        frontImageUri = imageUri,
+                        backImageUri = backImageUri,
+                        rotationDegrees = rotationDegrees
+                    )
                 }
             }
 
@@ -710,40 +708,93 @@ fun ImportedImageDocumentPreview(
     }
 }
 
-/** One labeled side tile ("Front" or "Back") used to show an ID card's two captured sides. */
+/**
+ * CamScanner-style ID-card preview surface: a single A4-shaped white page (same shape as the
+ * normal document preview) with one or two fixed, same-size, ID-card-ratio tiles centered on it —
+ * front on top, back below when captured. Card rects come from [IdCardLayoutPlanner], the same
+ * pure planner [com.dev.docscannerpdf.domain.pdf.PdfExportService] uses for the exported PDF, so
+ * preview and export agree on sizing/placement.
+ */
+@Composable
+private fun IdCardStackPreview(
+    frontImageUri: Uri,
+    backImageUri: Uri?,
+    rotationDegrees: Float
+) {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .aspectRatio(1f / 1.414f),
+        shape = RoundedCornerShape(0.dp),
+        color = Color.White
+    ) {
+        BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+            val density = LocalDensity.current
+            val pageWidthPx = with(density) { maxWidth.toPx() }
+            val pageHeightPx = with(density) { maxHeight.toPx() }
+            val sideCount = if (backImageUri != null) 2 else 1
+            val cardRects = remember(pageWidthPx, pageHeightPx, sideCount) {
+                IdCardLayoutPlanner.plan(sideCount, pageWidthPx, pageHeightPx)
+            }
+
+            IdCardSidePreviewTile(
+                imageUri = frontImageUri,
+                rotationDegrees = rotationDegrees,
+                label = "Front",
+                rect = cardRects[0],
+                density = density
+            )
+            if (backImageUri != null) {
+                IdCardSidePreviewTile(
+                    imageUri = backImageUri,
+                    rotationDegrees = rotationDegrees,
+                    label = "Back",
+                    rect = cardRects[1],
+                    density = density
+                )
+            }
+        }
+    }
+}
+
+/** One labeled, fixed-size ID-card tile ("Front" or "Back") placed at [rect] within its parent. */
 @Composable
 private fun IdCardSidePreviewTile(
     imageUri: Uri,
     rotationDegrees: Float,
     label: String,
-    modifier: Modifier = Modifier
+    rect: CardRect,
+    density: androidx.compose.ui.unit.Density
 ) {
-    Surface(
-        modifier = modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(0.dp),
-        color = Color.White
+    val offsetX = with(density) { rect.left.toDp() }
+    val offsetY = with(density) { rect.top.toDp() }
+    val tileWidth = with(density) { rect.width.toDp() }
+    val tileHeight = with(density) { rect.height.toDp() }
+    Box(
+        modifier = Modifier
+            .offset(x = offsetX, y = offsetY)
+            .size(width = tileWidth, height = tileHeight)
+            .border(1.dp, Color(0xFFD9DBE0))
     ) {
-        Box {
-            ImportedImageBitmap(
-                uri = imageUri,
-                modifier = Modifier
-                    .fillMaxSize()
-                    .graphicsLayer { rotationZ = rotationDegrees },
-                contentScale = ContentScale.Fit
+        ImportedImageBitmap(
+            uri = imageUri,
+            modifier = Modifier
+                .fillMaxSize()
+                .graphicsLayer { rotationZ = rotationDegrees },
+            contentScale = ContentScale.Fit
+        )
+        Surface(
+            modifier = Modifier.align(Alignment.TopStart),
+            color = Color.Black.copy(alpha = 0.62f),
+            shape = RoundedCornerShape(bottomEnd = 3.dp)
+        ) {
+            Text(
+                modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp),
+                text = label,
+                color = Color.White,
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.Bold
             )
-            Surface(
-                modifier = Modifier.align(Alignment.TopStart),
-                color = Color.Black.copy(alpha = 0.62f),
-                shape = RoundedCornerShape(bottomEnd = 3.dp)
-            ) {
-                Text(
-                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp),
-                    text = label,
-                    color = Color.White,
-                    style = MaterialTheme.typography.labelLarge,
-                    fontWeight = FontWeight.Bold
-                )
-            }
         }
     }
 }

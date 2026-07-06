@@ -54,7 +54,11 @@ data class PendingImageImport(
     val rotationDegrees: Float = 0f,
     // The back side of an ID-card scan, when the user captured one. Null for every other
     // scan/import flow — normal documents only ever have [imageUri].
-    val backImageUri: Uri? = null
+    val backImageUri: Uri? = null,
+    // True for an ID-card scan even when only the front was captured, so preview/export can use
+    // the ID-card-sized layout instead of the normal full-page document layout. Normal
+    // document scans/imports always leave this false.
+    val isIdCardScan: Boolean = false
 )
 
 data class PendingImageReview(
