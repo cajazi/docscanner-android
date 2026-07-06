@@ -46,6 +46,8 @@ import androidx.compose.material.icons.filled.BorderColor
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.CloudUpload
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Share
@@ -510,6 +512,11 @@ fun ImportedImageDocumentPreview(
     onMenu: () -> Unit
 ) {
     var showMenuOptions by remember { mutableStateOf(false) }
+    // ID-card scans only: the filter strip/backend processing/E2E validation panels are
+    // collapsed behind a compact toggle by default so the A4 preview gets nearly all the
+    // available height instead of being squeezed by three always-expanded panels. Normal
+    // document previews are unaffected — they keep showing these panels expanded, as before.
+    var showProcessingOptions by remember { mutableStateOf(false) }
     Scaffold(
         modifier = Modifier.safeDrawingPadding(),
         topBar = {
@@ -683,20 +690,45 @@ fun ImportedImageDocumentPreview(
                 }
             }
 
-            PreviewFilterStrip()
+            if (!isIdCardScan) {
+                PreviewFilterStrip()
 
-            ScannerBackendProcessingPanel(
-                state = backendProcessingState,
-                onProcessWithBackend = onProcessWithBackend,
-                onRetry = onRetryBackendProcessing
-            )
+                ScannerBackendProcessingPanel(
+                    state = backendProcessingState,
+                    onProcessWithBackend = onProcessWithBackend,
+                    onRetry = onRetryBackendProcessing
+                )
 
-            ScannerFlowValidationSection(
-                state = validationState,
-                onRunValidation = onRunValidation,
-                onRetryValidation = onRetryValidation,
-                onOpenResult = onOpenResult
-            )
+                ScannerFlowValidationSection(
+                    state = validationState,
+                    onRunValidation = onRunValidation,
+                    onRetryValidation = onRetryValidation,
+                    onOpenResult = onOpenResult
+                )
+            } else {
+                IdCardProcessingToggleRow(
+                    expanded = showProcessingOptions,
+                    onToggle = { showProcessingOptions = !showProcessingOptions },
+                    backendState = backendProcessingState,
+                    validationState = validationState
+                )
+                if (showProcessingOptions) {
+                    PreviewFilterStrip()
+
+                    ScannerBackendProcessingPanel(
+                        state = backendProcessingState,
+                        onProcessWithBackend = onProcessWithBackend,
+                        onRetry = onRetryBackendProcessing
+                    )
+
+                    ScannerFlowValidationSection(
+                        state = validationState,
+                        onRunValidation = onRunValidation,
+                        onRetryValidation = onRetryValidation,
+                        onOpenResult = onOpenResult
+                    )
+                }
+            }
 
             Surface(
                 modifier = Modifier
@@ -714,6 +746,46 @@ fun ImportedImageDocumentPreview(
                 }
             }
         }
+    }
+}
+
+/**
+ * Compact, collapsed-by-default summary row standing in for the filter strip/backend
+ * processing/E2E validation panels on the ID-card preview. Tapping it reveals the same panels
+ * (with the same actions/state) used by the normal document preview — nothing is removed, it
+ * just isn't expanded by default so the A4 preview above gets the space instead.
+ */
+@Composable
+private fun IdCardProcessingToggleRow(
+    expanded: Boolean,
+    onToggle: () -> Unit,
+    backendState: ScannerBackendProcessingState,
+    validationState: ScannerFlowValidationState
+) {
+    val summary = when {
+        validationState.stage == ScannerFlowStage.COMPLETED -> "Validation complete"
+        validationState.stage == ScannerFlowStage.ERROR -> "Validation failed"
+        backendState.isActive -> "Processing…"
+        else -> "Processing & validation options"
+    }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onToggle)
+            .padding(horizontal = 16.dp, vertical = 10.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = summary,
+            style = MaterialTheme.typography.labelMedium,
+            color = Color(0xFFB8BDC4)
+        )
+        Icon(
+            imageVector = if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+            contentDescription = if (expanded) "Hide processing options" else "Show processing options",
+            tint = Color(0xFFB8BDC4)
+        )
     }
 }
 
@@ -780,30 +852,40 @@ private fun IdCardSidePreviewTile(
     val offsetY = with(density) { rect.top.toDp() }
     val tileWidth = with(density) { rect.width.toDp() }
     val tileHeight = with(density) { rect.height.toDp() }
-    Box(
+    // The label sits in its own bar above the photo (not overlaid on top of it) so it never
+    // covers card content such as a photo or ID number near the card's top edge. The tile's
+    // overall bounds still exactly match [rect] from IdCardLayoutPlanner — the same rect
+    // PdfExportService draws into — so the card's position/size on the page is unchanged; only
+    // the label bar eats into the tile's own height, leaving the rest for the photo.
+    Column(
         modifier = Modifier
             .offset(x = offsetX, y = offsetY)
             .size(width = tileWidth, height = tileHeight)
             .border(1.dp, Color(0xFFD9DBE0))
     ) {
-        ImportedImageBitmap(
-            uri = imageUri,
-            modifier = Modifier
-                .fillMaxSize()
-                .graphicsLayer { rotationZ = rotationDegrees },
-            contentScale = ContentScale.Fit
-        )
         Surface(
-            modifier = Modifier.align(Alignment.TopStart),
-            color = Color.Black.copy(alpha = 0.62f),
-            shape = RoundedCornerShape(bottomEnd = 3.dp)
+            modifier = Modifier.fillMaxWidth(),
+            color = Color(0xFFEFF1F5)
         ) {
             Text(
-                modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp),
+                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
                 text = label,
-                color = Color.White,
-                style = MaterialTheme.typography.labelLarge,
+                color = Color(0xFF3A3D45),
+                style = MaterialTheme.typography.labelSmall,
                 fontWeight = FontWeight.Bold
+            )
+        }
+        Box(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth()
+        ) {
+            ImportedImageBitmap(
+                uri = imageUri,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .graphicsLayer { rotationZ = rotationDegrees },
+                contentScale = ContentScale.Fit
             )
         }
     }
