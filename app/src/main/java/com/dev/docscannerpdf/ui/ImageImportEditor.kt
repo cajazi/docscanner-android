@@ -1443,7 +1443,7 @@ private fun FinalPreviewToolbar(
 }
 
 @Composable
-private fun ImportedImageBitmap(
+internal fun ImportedImageBitmap(
     uri: Uri,
     modifier: Modifier = Modifier,
     contentScale: ContentScale = ContentScale.Fit

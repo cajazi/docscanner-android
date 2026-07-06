@@ -30,5 +30,7 @@ enum class MainScreen {
     ImageImportReview,
     ImageEditor,
     ImportedImagePreview,
-    IdCardGuidedCapture
+    IdCardGuidedCapture,
+    IdCardReview,
+    IdCardCropEditor
 }

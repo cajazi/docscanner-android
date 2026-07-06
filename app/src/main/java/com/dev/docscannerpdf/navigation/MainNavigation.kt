@@ -43,6 +43,8 @@ internal fun MainActivity.currentScreen(): MainScreen {
         showPdfTools -> MainScreen.PdfTools
         showLiveScanner -> MainScreen.LiveScanner
         showIdCardGuidedCapture -> MainScreen.IdCardGuidedCapture
+        idCardCropState != null -> MainScreen.IdCardCropEditor
+        idCardReview != null -> MainScreen.IdCardReview
         cropState != null -> MainScreen.CropEditor
         multiPageEditorState != null -> MainScreen.MultiPageEditor
         showDocumentLibrary -> MainScreen.DocumentLibrary
@@ -85,6 +87,9 @@ internal fun MainActivity.handleSystemBack() {
         showCompressPdf -> closeCompressPdf()
         showLiveScanner -> showLiveScanner = false
         showIdCardGuidedCapture -> showIdCardGuidedCapture = false
+        // The ID-card crop editor sits on top of the ID-card review step; back cancels it first.
+        idCardCropState != null -> cancelIdCardCropEditor()
+        idCardReview != null -> cancelIdCardReview()
         showAiTools -> showAiTools = false
         showPdfTools -> showPdfTools = false
         // The crop editor sits on top of the result screen; back cancels it first.
