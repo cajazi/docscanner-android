@@ -1113,6 +1113,7 @@ fun IdCardFeatureScreen(
         Column(
             modifier = Modifier
                 .fillMaxSize()
+                .navigationBarsPadding()
                 .padding(horizontal = 16.dp, vertical = 16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
@@ -1264,9 +1265,17 @@ fun IdCardFeatureScreen(
             ) {
                 Text(text = "Make it now", fontWeight = FontWeight.SemiBold)
             }
+
+            // Reserved space for a future bottom banner ad (standard AdMob banner is ~50dp
+            // tall) plus margin, so the button sits clearly above the ad area instead of
+            // right at the screen edge.
+            Spacer(modifier = Modifier.height(AdBannerSafeSpace))
         }
     }
 }
+
+/** Reserved height below primary CTAs so a bottom banner ad never overlaps them. */
+private val AdBannerSafeSpace = 72.dp
 
 @Composable
 private fun RecentsHeader(

@@ -623,18 +623,26 @@ fun ImportedImageDocumentPreview(
                 .padding(innerPadding)
                 .background(Color(0xFF101114))
         ) {
-            Box(
+            BoxWithConstraints(
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp, vertical = 10.dp),
                 contentAlignment = Alignment.Center
             ) {
+                // Fit an A4-ratio (1:1.414) page inside the space actually available on screen —
+                // constrained by both width AND height — instead of always sizing from full
+                // width. On shorter screens the filter/backend/validation panels below can leave
+                // less height than a full-width page would need; sizing from width alone let the
+                // page overflow past its box and get crowded by/hidden behind those panels.
+                val pageAspectRatio = 1f / 1.414f
+                val pageWidth = minOf(maxWidth, maxHeight * pageAspectRatio)
+                val pageHeight = pageWidth / pageAspectRatio
+                val pageModifier = Modifier.width(pageWidth).height(pageHeight)
+
                 if (!isIdCardScan) {
                     Surface(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .aspectRatio(1f / 1.414f),
+                        modifier = pageModifier,
                         shape = RoundedCornerShape(0.dp),
                         color = Color.White
                     ) {
@@ -669,7 +677,8 @@ fun ImportedImageDocumentPreview(
                     IdCardStackPreview(
                         frontImageUri = imageUri,
                         backImageUri = backImageUri,
-                        rotationDegrees = rotationDegrees
+                        rotationDegrees = rotationDegrees,
+                        modifier = pageModifier
                     )
                 }
             }
@@ -713,18 +722,19 @@ fun ImportedImageDocumentPreview(
  * normal document preview) with one or two fixed, same-size, ID-card-ratio tiles centered on it —
  * front on top, back below when captured. Card rects come from [IdCardLayoutPlanner], the same
  * pure planner [com.dev.docscannerpdf.domain.pdf.PdfExportService] uses for the exported PDF, so
- * preview and export agree on sizing/placement.
+ * preview and export agree on sizing/placement. [modifier] fixes the page's exact width/height —
+ * callers size it so the page fits inside whatever space is actually available (see
+ * [ImportedImageDocumentPreview]) rather than this composable assuming full width always fits.
  */
 @Composable
 private fun IdCardStackPreview(
     frontImageUri: Uri,
     backImageUri: Uri?,
-    rotationDegrees: Float
+    rotationDegrees: Float,
+    modifier: Modifier = Modifier
 ) {
     Surface(
-        modifier = Modifier
-            .fillMaxWidth()
-            .aspectRatio(1f / 1.414f),
+        modifier = modifier,
         shape = RoundedCornerShape(0.dp),
         color = Color.White
     ) {
