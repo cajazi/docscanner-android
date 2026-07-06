@@ -182,6 +182,8 @@ class MainActivity : FragmentActivity() {
     }
     private var pendingScanTitlePrefix = DEFAULT_SCAN_TITLE_PREFIX
     private var pendingScanIsIdCardScan = false
+    private var pendingIdCardCaptureTitlePrefix = DEFAULT_SCAN_TITLE_PREFIX
+    internal var showIdCardGuidedCapture by mutableStateOf(false)
     private val processDocumentUseCase = ProcessDocumentUseCase()
     private val scannerFlowValidationUseCase = ScannerFlowValidationUseCase()
     private val pdfExportService by lazy { PdfExportService(applicationContext) }
@@ -1216,6 +1218,49 @@ class MainActivity : FragmentActivity() {
     internal fun openLiveScanner() {
         showAiTools = false
         showLiveScanner = true
+    }
+
+    /** Directory captured ID-card images are written to — private app storage, never external. */
+    internal val idCardCaptureDirectory: File
+        get() = File(filesDir, "id_card_guided_capture")
+
+    /** Opens the guided ID-card camera screen in place of the ML Kit document scanner. */
+    internal fun startIdCardGuidedCapture(titlePrefix: String) {
+        pendingIdCardCaptureTitlePrefix = titlePrefix
+        showIdCardGuidedCapture = true
+    }
+
+    /**
+     * Called once the guided ID-card capture screen has a front image (and, optionally, a back
+     * image). Mirrors what the ML Kit scanner launcher already does for an ID-card scan: seed
+     * [importedImagePreview] with both sides and kick off the same best-effort local enhancement,
+     * so the rest of the pipeline (A4 preview, backend processing, validation, export) is
+     * reused unchanged.
+     */
+    internal fun handleIdCardGuidedCaptureComplete(frontUri: Uri, backUri: Uri?) {
+        showIdCardGuidedCapture = false
+        val previewTitle = "$pendingIdCardCaptureTitlePrefix " +
+            SimpleDateFormat("dd-MM-yyyy HH.mm", Locale.getDefault()).format(Date())
+        imageImportReview = null
+        pendingImageImport = null
+        imageEditorMessage = null
+        scannerBackendProcessingState = ScannerBackendProcessingState.Idle
+        scannerFlowValidationState = ScannerFlowValidationState()
+        documentResultState = null
+        importedImagePreview = PendingImageImport(
+            imageUri = frontUri,
+            title = previewTitle,
+            backImageUri = backUri,
+            isIdCardScan = true
+        )
+        enhanceIdScanPreviewImage(rawPreviewUri = frontUri, previewTitle = previewTitle)
+        if (backUri != null) {
+            enhanceIdScanPreviewImage(
+                rawPreviewUri = backUri,
+                previewTitle = previewTitle,
+                isBackSide = true
+            )
+        }
     }
 
     /**

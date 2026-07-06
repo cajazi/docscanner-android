@@ -29,5 +29,6 @@ enum class MainScreen {
     LiveScanner,
     ImageImportReview,
     ImageEditor,
-    ImportedImagePreview
+    ImportedImagePreview,
+    IdCardGuidedCapture
 }
