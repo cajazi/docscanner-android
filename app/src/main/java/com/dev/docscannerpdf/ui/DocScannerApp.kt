@@ -21,6 +21,7 @@ import com.dev.docscannerpdf.ui.debug.ApiHealthScreen
 import com.dev.docscannerpdf.ui.crop.CropEditorScreen
 import com.dev.docscannerpdf.ui.detection.LiveScannerScreen
 import com.dev.docscannerpdf.ui.idcard.IdCardGuidedCaptureScreen
+import com.dev.docscannerpdf.ui.idcard.IdCardReviewScreen
 import com.dev.docscannerpdf.ui.library.DocumentLibraryScreen
 import com.dev.docscannerpdf.ui.library.buildDocumentLibraryState
 import com.dev.docscannerpdf.ui.pages.MultiPageDocumentEditorScreen
@@ -656,8 +657,28 @@ internal fun DocScannerApp(host: MainActivity) {
                         outputDirectory = host.idCardCaptureDirectory,
                         onBack = { host.showIdCardGuidedCapture = false },
                         onCaptureComplete = { front, back ->
-                            host.handleIdCardGuidedCaptureComplete(front, back)
+                            host.beginIdCardReview(front, back)
                         }
+                    )
+                } else if (host.idCardCropState != null) {
+                    CropEditorScreen(
+                        state = host.idCardCropState!!,
+                        sourceBitmap = host.idCardCropSourceBitmap,
+                        onMoveCorner = host::idCardCropMoveCorner,
+                        onReset = host::idCardCropResetQuad,
+                        onApply = host::idCardCropApply,
+                        onCancel = host::cancelIdCardCropEditor
+                    )
+                } else if (host.idCardReview != null) {
+                    val reviewState = host.idCardReview!!
+                    IdCardReviewScreen(
+                        state = reviewState,
+                        onBack = host::cancelIdCardReview,
+                        onSelectSide = host::selectIdCardReviewSide,
+                        onRotateSelected = host::rotateSelectedIdCardReviewSide,
+                        onCrop = host::openIdCardCropEditor,
+                        onEnhance = host::enhanceSelectedIdCardReviewSide,
+                        onSave = host::confirmIdCardReview
                     )
                 } else if (host.multiPageEditorState != null) {
                     val editorState = host.multiPageEditorState!!

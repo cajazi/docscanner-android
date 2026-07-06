@@ -105,6 +105,9 @@ import com.dev.docscannerpdf.domain.crop.CropReducer
 import com.dev.docscannerpdf.domain.crop.CropState
 import com.dev.docscannerpdf.domain.crop.PerspectiveQuad
 import com.dev.docscannerpdf.domain.detection.LiveFrameAnalyzer
+import com.dev.docscannerpdf.domain.idscan.IdCardReviewFlow
+import com.dev.docscannerpdf.domain.idscan.IdCardReviewSide
+import com.dev.docscannerpdf.domain.idscan.IdCardReviewState
 import com.dev.docscannerpdf.domain.idscan.IdScanPostProcessor
 import com.dev.docscannerpdf.ui.crop.CropImageProcessor
 import com.dev.docscannerpdf.ui.detection.LumaFrameFactory
@@ -184,6 +187,14 @@ class MainActivity : FragmentActivity() {
     private var pendingScanIsIdCardScan = false
     private var pendingIdCardCaptureTitlePrefix = DEFAULT_SCAN_TITLE_PREFIX
     internal var showIdCardGuidedCapture by mutableStateOf(false)
+    // CamScanner-style post-capture review step (crop/rotate/enhance/save) shown after guided
+    // capture completes and before the final Document Ready preview. Kept entirely separate from
+    // the normal document crop/preview state below so the ID-card flow can never affect it.
+    internal var idCardReview by mutableStateOf<IdCardReviewState?>(null)
+    private var pendingIdCardReviewTitle = DEFAULT_SCAN_TITLE_PREFIX
+    internal var idCardCropState by mutableStateOf<CropState?>(null)
+    internal var idCardCropSourceBitmap by mutableStateOf<android.graphics.Bitmap?>(null)
+    private var idCardCropTargetSide = IdCardReviewSide.FRONT
     private val processDocumentUseCase = ProcessDocumentUseCase()
     private val scannerFlowValidationUseCase = ScannerFlowValidationUseCase()
     private val pdfExportService by lazy { PdfExportService(applicationContext) }
@@ -1232,34 +1243,191 @@ class MainActivity : FragmentActivity() {
 
     /**
      * Called once the guided ID-card capture screen has a front image (and, optionally, a back
-     * image). Mirrors what the ML Kit scanner launcher already does for an ID-card scan: seed
-     * [importedImagePreview] with both sides and kick off the same best-effort local enhancement,
-     * so the rest of the pipeline (A4 preview, backend processing, validation, export) is
-     * reused unchanged.
+     * image). Instead of jumping straight to the generic Document Ready preview, this opens the
+     * CamScanner-style [IdCardReviewState] step (crop/rotate/enhance/save) and kicks off the same
+     * best-effort local enhancement in the background — which now also corrects EXIF orientation,
+     * so the review screen shows each side exactly as captured rather than sideways.
      */
-    internal fun handleIdCardGuidedCaptureComplete(frontUri: Uri, backUri: Uri?) {
+    internal fun beginIdCardReview(frontUri: Uri, backUri: Uri?) {
         showIdCardGuidedCapture = false
-        val previewTitle = "$pendingIdCardCaptureTitlePrefix " +
+        pendingIdCardReviewTitle = "$pendingIdCardCaptureTitlePrefix " +
             SimpleDateFormat("dd-MM-yyyy HH.mm", Locale.getDefault()).format(Date())
-        imageImportReview = null
-        pendingImageImport = null
-        imageEditorMessage = null
-        scannerBackendProcessingState = ScannerBackendProcessingState.Idle
-        scannerFlowValidationState = ScannerFlowValidationState()
-        documentResultState = null
-        importedImagePreview = PendingImageImport(
-            imageUri = frontUri,
-            title = previewTitle,
-            backImageUri = backUri,
-            isIdCardScan = true
+        idCardReview = IdCardReviewState(
+            frontImageUri = frontUri.toString(),
+            backImageUri = backUri?.toString()
         )
-        enhanceIdScanPreviewImage(rawPreviewUri = frontUri, previewTitle = previewTitle)
+        enhanceIdCardReviewImage(rawUri = frontUri, side = IdCardReviewSide.FRONT)
         if (backUri != null) {
-            enhanceIdScanPreviewImage(
-                rawPreviewUri = backUri,
-                previewTitle = previewTitle,
-                isBackSide = true
+            enhanceIdCardReviewImage(rawUri = backUri, side = IdCardReviewSide.BACK)
+        }
+    }
+
+    /**
+     * Best-effort local enhancement (contrast/sharpen + EXIF orientation correction, see
+     * [IdScanPostProcessor]) of one review side's image. Swaps the corrected image into
+     * [idCardReview] once ready only if that side still shows the same raw image it started
+     * from — if the user already cropped/rotated/re-enhanced it in the meantime, this stale
+     * result is dropped instead of clobbering their edit.
+     */
+    private fun enhanceIdCardReviewImage(rawUri: Uri, side: IdCardReviewSide) {
+        lifecycleScope.launch {
+            val enhancedUri = runCatching {
+                IdScanPostProcessor.processUri(
+                    context = this@MainActivity,
+                    sourceUri = rawUri,
+                    outputDirectory = File(
+                        filesDir,
+                        if (side == IdCardReviewSide.BACK) "id_scan_preview_back" else "id_scan_preview"
+                    )
+                )
+            }.getOrNull()
+            if (enhancedUri == null) {
+                Log.w(TAG, "Unable to enhance ID card review image.")
+                return@launch
+            }
+            val current = idCardReview ?: return@launch
+            val rawUriString = rawUri.toString()
+            val stillRaw = current.imageUri(side) == rawUriString
+            if (stillRaw) {
+                idCardReview = IdCardReviewFlow.withUpdatedImage(current, side, enhancedUri.toString())
+            }
+        }
+    }
+
+    /** Selects which side (front/back) the review screen's Crop/Rotate controls target. */
+    internal fun selectIdCardReviewSide(side: IdCardReviewSide) {
+        idCardReview = idCardReview?.let { IdCardReviewFlow.selectSide(it, side) }
+    }
+
+    /** Rotates only the currently selected review side by 90°; the other side is untouched. */
+    internal fun rotateSelectedIdCardReviewSide() {
+        idCardReview = idCardReview?.let { IdCardReviewFlow.rotateSelected(it) }
+    }
+
+    /** Manually re-runs the enhancement pass on the currently selected review side's image. */
+    internal fun enhanceSelectedIdCardReviewSide() {
+        val current = idCardReview ?: return
+        val side = current.selectedSide
+        val uri = current.imageUri(side)?.let(Uri::parse) ?: return
+        enhanceIdCardReviewImage(rawUri = uri, side = side)
+    }
+
+    /** Cancels the ID-card review step entirely, discarding both captured sides. */
+    internal fun cancelIdCardReview() {
+        idCardReview = null
+    }
+
+    /**
+     * Finalizes the ID-card review (the review screen's Save/check action): bakes any
+     * user-requested rotation into the actual pixels — neither the Document Ready preview nor
+     * the exported PDF apply a rotation transform of their own, so the saved file must already be
+     * correctly oriented — then hands off to the existing Document Ready pipeline exactly like a
+     * completed ID-card scan always has.
+     */
+    internal fun confirmIdCardReview() {
+        val review = idCardReview ?: return
+        val title = pendingIdCardReviewTitle
+        idCardReview = null
+        lifecycleScope.launch {
+            val frontUri = bakeIdCardRotation(Uri.parse(review.frontImageUri), review.frontRotationDegrees)
+            val backUri = review.backImageUri?.let {
+                bakeIdCardRotation(Uri.parse(it), review.backRotationDegrees)
+            }
+
+            imageImportReview = null
+            pendingImageImport = null
+            imageEditorMessage = null
+            scannerBackendProcessingState = ScannerBackendProcessingState.Idle
+            scannerFlowValidationState = ScannerFlowValidationState()
+            documentResultState = null
+            importedImagePreview = PendingImageImport(
+                imageUri = frontUri,
+                title = title,
+                backImageUri = backUri,
+                isIdCardScan = true
             )
+        }
+    }
+
+    private suspend fun bakeIdCardRotation(uri: Uri, degrees: Int): Uri {
+        if (degrees == 0) return uri
+        return runCatching {
+            IdScanPostProcessor.rotateAndSave(
+                context = this@MainActivity,
+                sourceUri = uri,
+                degrees = degrees,
+                outputDirectory = File(filesDir, "id_scan_rotated")
+            )
+        }.getOrNull() ?: uri
+    }
+
+    /** Opens the shared crop editor targeting the ID-card review's currently selected side. */
+    internal fun openIdCardCropEditor() {
+        val review = idCardReview ?: return
+        val side = review.selectedSide
+        val source = review.imageUri(side)
+        if (source.isNullOrBlank()) {
+            viewModel.showError("No image is available to crop.")
+            return
+        }
+        idCardCropTargetSide = side
+        idCardCropSourceBitmap = null
+        val startingQuad = PerspectiveQuad.full()
+        idCardCropState = CropState(
+            sourceImageUri = source,
+            quad = startingQuad,
+            originalQuad = startingQuad,
+            mode = com.dev.docscannerpdf.domain.crop.CropMode.EDITING
+        )
+        lifecycleScope.launch {
+            val bitmap = cropImageProcessor.loadSource(source)
+            if (bitmap == null) {
+                idCardCropState = null
+                viewModel.showError("Unable to load the image for cropping.")
+                return@launch
+            }
+            idCardCropSourceBitmap = bitmap
+        }
+    }
+
+    internal fun cancelIdCardCropEditor() {
+        idCardCropState = null
+        idCardCropSourceBitmap = null
+    }
+
+    internal fun idCardCropMoveCorner(corner: CropCorner, x: Float, y: Float) {
+        idCardCropState = idCardCropState?.let { CropReducer.moveCorner(it, corner, x, y) }
+    }
+
+    internal fun idCardCropResetQuad() {
+        idCardCropState = idCardCropState?.let { CropReducer.resetQuad(it) }
+    }
+
+    /** Applies the ID-card crop: warps to a new local file and swaps it into the review's target side. */
+    internal fun idCardCropApply() {
+        val current = idCardCropState ?: return
+        val bitmap = idCardCropSourceBitmap
+        if (bitmap == null) {
+            viewModel.showError("Image is still loading.")
+            return
+        }
+        val applying = CropReducer.applyCrop(current)
+        if (!applying.isApplying) {
+            viewModel.showError("Adjust the corners into a valid shape before applying.")
+            return
+        }
+        idCardCropState = applying
+        val side = idCardCropTargetSide
+        lifecycleScope.launch {
+            val croppedUri = cropImageProcessor.warpAndSave(bitmap, applying.quad)
+            if (croppedUri == null) {
+                idCardCropState = current.copy(mode = com.dev.docscannerpdf.domain.crop.CropMode.EDITING)
+                viewModel.showError("Unable to apply crop.")
+                return@launch
+            }
+            idCardReview = idCardReview?.let { IdCardReviewFlow.withUpdatedImage(it, side, croppedUri.toString()) }
+            cancelIdCardCropEditor()
+            viewModel.showError("Crop applied.")
         }
     }
 

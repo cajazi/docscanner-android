@@ -9,6 +9,7 @@ import android.graphics.ColorMatrix
 import android.graphics.ColorMatrixColorFilter
 import android.graphics.Matrix
 import android.graphics.Paint
+import android.media.ExifInterface
 import android.net.Uri
 import com.dev.docscannerpdf.domain.crop.PerspectiveGeometry
 import com.dev.docscannerpdf.domain.crop.PerspectiveTransformEngine
@@ -72,10 +73,14 @@ object IdScanPostProcessor {
 
     /**
      * URI convenience overload for [ScannerViewModel][com.dev.docscannerpdf.presentation.ScannerViewModel]
-     * callers: decodes [sourceUri], runs [process], saves the result as a private-storage JPEG
-     * under [outputDirectory] (created if needed — always inside the app's own sandbox, never
-     * external storage), and returns its file [Uri]. Returns null on any failure (bad URI,
-     * decode failure, save failure) so callers can fall back to the original [sourceUri].
+     * callers: decodes [sourceUri], corrects its orientation using the file's own EXIF tag (see
+     * [rotationDegreesFromExif] — camera/gallery JPEGs are very commonly stored in the sensor's
+     * native orientation with an EXIF tag saying how much to rotate for display, and plain
+     * [BitmapFactory] decoding never applies that tag itself), runs [process] on the now-upright
+     * bitmap, saves the result as a private-storage JPEG under [outputDirectory] (created if
+     * needed — always inside the app's own sandbox, never external storage), and returns its file
+     * [Uri]. Returns null on any failure (bad URI, decode failure, save failure) so callers can
+     * fall back to the original [sourceUri].
      */
     suspend fun processUri(
         context: Context,
@@ -83,11 +88,14 @@ object IdScanPostProcessor {
         outputDirectory: File,
         config: Config = Config()
     ): Uri? = withContext(Dispatchers.IO) {
-        val source = runCatching {
+        val decoded = runCatching {
             context.contentResolver.openInputStream(sourceUri)?.use { stream ->
                 BitmapFactory.decodeStream(stream)
             }
         }.getOrNull() ?: return@withContext null
+
+        val orientationDegrees = rotationDegreesFromExif(context, sourceUri)
+        val source = rotateBitmap(decoded, orientationDegrees)
 
         val enhanced = runCatching { process(source, config) }.getOrNull()
         if (source !== enhanced) source.recycle()
@@ -104,6 +112,70 @@ object IdScanPostProcessor {
             }.getOrNull()
         } finally {
             enhanced.recycle()
+        }
+    }
+
+    /**
+     * Reads [uri]'s EXIF `Orientation` tag (falling back to "normal"/no rotation on any failure —
+     * a missing or malformed tag must never crash the scan flow) and maps it through the pure
+     * [ExifOrientationDegrees] to a clockwise rotation in degrees.
+     */
+    fun rotationDegreesFromExif(context: Context, uri: Uri): Int = runCatching {
+        val exif = when (uri.scheme?.lowercase()) {
+            "file" -> uri.path?.let { ExifInterface(it) }
+            else -> context.contentResolver.openInputStream(uri)?.use { ExifInterface(it) }
+        }
+        val tag = exif?.getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL)
+            ?: ExifInterface.ORIENTATION_NORMAL
+        ExifOrientationDegrees.degreesFor(tag)
+    }.getOrDefault(0)
+
+    /**
+     * Rotates [source] clockwise by [degrees] (a fresh bitmap; [source] is recycled when a new
+     * one is produced) or returns [source] unchanged when [degrees] is 0.
+     */
+    private fun rotateBitmap(source: Bitmap, degrees: Int): Bitmap {
+        if (degrees == 0) return source
+        val matrix = Matrix().apply { postRotate(degrees.toFloat()) }
+        val rotated = Bitmap.createBitmap(source, 0, 0, source.width, source.height, matrix, true)
+        if (rotated !== source) source.recycle()
+        return rotated
+    }
+
+    /**
+     * User-driven manual rotation: decodes [sourceUri] (no further enhancement/refinement — the
+     * image has typically already been through [processUri] once), rotates it clockwise by
+     * [degrees], and saves the result as a new private-storage JPEG under [outputDirectory].
+     * Used to bake in a rotation the user explicitly requested on the ID-card review screen, since
+     * neither the Document Ready preview nor the exported PDF apply any rotation transform of
+     * their own — the saved pixels must already be correctly oriented. Returns null on failure so
+     * callers can fall back to the un-rotated image.
+     */
+    suspend fun rotateAndSave(
+        context: Context,
+        sourceUri: Uri,
+        degrees: Int,
+        outputDirectory: File
+    ): Uri? = withContext(Dispatchers.IO) {
+        if (degrees == 0) return@withContext sourceUri
+        val decoded = runCatching {
+            context.contentResolver.openInputStream(sourceUri)?.use { stream ->
+                BitmapFactory.decodeStream(stream)
+            }
+        }.getOrNull() ?: return@withContext null
+
+        val rotated = rotateBitmap(decoded, degrees)
+        try {
+            runCatching {
+                if (!outputDirectory.exists()) outputDirectory.mkdirs()
+                val file = File(outputDirectory, "id-scan-rotated-${System.currentTimeMillis()}.jpg")
+                file.outputStream().use { output ->
+                    rotated.compress(Bitmap.CompressFormat.JPEG, 92, output)
+                }
+                Uri.fromFile(file)
+            }.getOrNull()
+        } finally {
+            rotated.recycle()
         }
     }
 
