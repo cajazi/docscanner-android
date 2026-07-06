@@ -20,13 +20,13 @@ import com.dev.docscannerpdf.navigation.handleSystemBack
 import com.dev.docscannerpdf.ui.debug.ApiHealthScreen
 import com.dev.docscannerpdf.ui.crop.CropEditorScreen
 import com.dev.docscannerpdf.ui.detection.LiveScannerScreen
+import com.dev.docscannerpdf.ui.idcard.IdCardGuidedCaptureScreen
 import com.dev.docscannerpdf.ui.library.DocumentLibraryScreen
 import com.dev.docscannerpdf.ui.library.buildDocumentLibraryState
 import com.dev.docscannerpdf.ui.pages.MultiPageDocumentEditorScreen
 import com.dev.docscannerpdf.ui.result.DocumentResultScreen
 import com.dev.docscannerpdf.ui.theme.DocScannerPDFTheme
 import com.dev.docscannerpdf.util.AppConstants
-import com.google.mlkit.vision.documentscanner.GmsDocumentScannerOptions
 import kotlinx.coroutines.launch
 
 @Composable
@@ -642,17 +642,22 @@ internal fun DocScannerApp(host: MainActivity) {
                             } else {
                                 host.idCardValidationMessage = null
                                 host.showIdCardFlow = false
-                                host.startDocumentScanner(
-                                    // ID cards have a front and an optional back — up to 2 pages.
-                                    pageLimit = 2,
-                                    titlePrefix = "$host.selectedIdCardCategory Scan",
-                                    galleryImportAllowed = true,
-                                    scannerMode = GmsDocumentScannerOptions.SCANNER_MODE_BASE_WITH_FILTER,
-                                    isIdCardScan = true
+                                // CamScanner-style guided front/back capture instead of the ML
+                                // Kit document scanner UI.
+                                host.startIdCardGuidedCapture(
+                                    titlePrefix = "${host.selectedIdCardCategory} Scan"
                                 )
                             }
                         },
                         modifier = Modifier.fillMaxSize()
+                    )
+                } else if (host.showIdCardGuidedCapture) {
+                    IdCardGuidedCaptureScreen(
+                        outputDirectory = host.idCardCaptureDirectory,
+                        onBack = { host.showIdCardGuidedCapture = false },
+                        onCaptureComplete = { front, back ->
+                            host.handleIdCardGuidedCaptureComplete(front, back)
+                        }
                     )
                 } else if (host.multiPageEditorState != null) {
                     val editorState = host.multiPageEditorState!!
