@@ -58,7 +58,12 @@ data class PendingImageImport(
     // True for an ID-card scan even when only the front was captured, so preview/export can use
     // the ID-card-sized layout instead of the normal full-page document layout. Normal
     // document scans/imports always leave this false.
-    val isIdCardScan: Boolean = false
+    val isIdCardScan: Boolean = false,
+    // The rendered combined result page (front + back on one white A4-style page) for an
+    // ID-card scan — the single image the Document Ready preview shows and "Save to gallery"
+    // writes. Null while it is still rendering and for every non-ID-card flow. [imageUri]/
+    // [backImageUri] stay the per-side sources the PDF export lays out itself.
+    val combinedImageUri: Uri? = null
 )
 
 data class PendingImageReview(

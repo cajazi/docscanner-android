@@ -105,6 +105,7 @@ import com.dev.docscannerpdf.domain.crop.CropReducer
 import com.dev.docscannerpdf.domain.crop.CropState
 import com.dev.docscannerpdf.domain.crop.PerspectiveQuad
 import com.dev.docscannerpdf.domain.detection.LiveFrameAnalyzer
+import com.dev.docscannerpdf.domain.idscan.IdCardCombinedPageRenderer
 import com.dev.docscannerpdf.domain.idscan.IdCardReviewFlow
 import com.dev.docscannerpdf.domain.idscan.IdCardReviewSide
 import com.dev.docscannerpdf.domain.idscan.IdCardReviewState
@@ -191,7 +192,6 @@ class MainActivity : FragmentActivity() {
     // capture completes and before the final Document Ready preview. Kept entirely separate from
     // the normal document crop/preview state below so the ID-card flow can never affect it.
     internal var idCardReview by mutableStateOf<IdCardReviewState?>(null)
-    private var pendingIdCardReviewTitle = DEFAULT_SCAN_TITLE_PREFIX
     internal var idCardCropState by mutableStateOf<CropState?>(null)
     internal var idCardCropSourceBitmap by mutableStateOf<android.graphics.Bitmap?>(null)
     private var idCardCropTargetSide = IdCardReviewSide.FRONT
@@ -308,6 +308,9 @@ class MainActivity : FragmentActivity() {
                     isIdCardScan = isIdCardScan
                 )
                 if (isIdCardScan) {
+                    // A first combined page renders from the raw sides right away so the preview
+                    // never shows only the front; each enhancement below re-renders it.
+                    refreshIdCardCombinedPreviewImage()
                     enhanceIdScanPreviewImage(
                         rawPreviewUri = previewPageUri,
                         previewTitle = previewTitle
@@ -365,12 +368,14 @@ class MainActivity : FragmentActivity() {
                     if (documentResultState?.localBackPreviewUri == rawPreviewUri.toString()) {
                         documentResultState = documentResultState?.copy(localBackPreviewUri = enhancedUri.toString())
                     }
+                    refreshIdCardCombinedPreviewImage()
                 }
             } else if (currentPreview.imageUri == rawPreviewUri) {
                 importedImagePreview = currentPreview.copy(imageUri = enhancedUri)
                 if (documentResultState?.localPreviewUri == rawPreviewUri.toString()) {
                     documentResultState = documentResultState?.copy(localPreviewUri = enhancedUri.toString())
                 }
+                refreshIdCardCombinedPreviewImage()
             }
         }
     }
@@ -952,6 +957,11 @@ class MainActivity : FragmentActivity() {
             scannerFlowValidationState = ScannerFlowValidationState()
             documentResultState = null
             importedImagePreview = finalState
+            // Re-editing an ID-card scan's front image invalidates the combined result page;
+            // re-render it from the edited sides. No-op for normal documents.
+            if (finalState.isIdCardScan) {
+                refreshIdCardCombinedPreviewImage()
+            }
         }
     }
 
@@ -1250,11 +1260,12 @@ class MainActivity : FragmentActivity() {
      */
     internal fun beginIdCardReview(frontUri: Uri, backUri: Uri?) {
         showIdCardGuidedCapture = false
-        pendingIdCardReviewTitle = "$pendingIdCardCaptureTitlePrefix " +
+        val title = "$pendingIdCardCaptureTitlePrefix " +
             SimpleDateFormat("dd-MM-yyyy HH.mm", Locale.getDefault()).format(Date())
         idCardReview = IdCardReviewState(
             frontImageUri = frontUri.toString(),
-            backImageUri = backUri?.toString()
+            backImageUri = backUri?.toString(),
+            title = title
         )
         enhanceIdCardReviewImage(rawUri = frontUri, side = IdCardReviewSide.FRONT)
         if (backUri != null) {
@@ -1294,14 +1305,21 @@ class MainActivity : FragmentActivity() {
         }
     }
 
-    /** Selects which side (front/back) the review screen's Crop/Rotate controls target. */
+    /**
+     * Selects [side] as the Crop/Rotate/Filter target — and does nothing else. Tapping an image
+     * must never rotate it (users hit unexpected rotations when tap-to-rotate was tried);
+     * rotation only ever happens through [rotateSelectedIdCardReviewSide], wired to the explicit
+     * Rotate toolbar button.
+     */
     internal fun selectIdCardReviewSide(side: IdCardReviewSide) {
-        idCardReview = idCardReview?.let { IdCardReviewFlow.selectSide(it, side) }
+        val current = idCardReview ?: return
+        idCardReview = IdCardReviewFlow.selectSide(current, side)
     }
 
-    /** Rotates only the currently selected review side by 90°; the other side is untouched. */
+    /** Rotates the currently selected review side 90° — the explicit Rotate button's action. */
     internal fun rotateSelectedIdCardReviewSide() {
-        idCardReview = idCardReview?.let { IdCardReviewFlow.rotateSelected(it) }
+        val current = idCardReview ?: return
+        idCardReview = IdCardReviewFlow.rotateSelected(current)
     }
 
     /** Manually re-runs the enhancement pass on the currently selected review side's image. */
@@ -1310,6 +1328,26 @@ class MainActivity : FragmentActivity() {
         val side = current.selectedSide
         val uri = current.imageUri(side)?.let(Uri::parse) ?: return
         enhanceIdCardReviewImage(rawUri = uri, side = side)
+    }
+
+    /** Applies a user-edited title from the review screen's rename (pencil) dialog. */
+    internal fun renameIdCardReviewTitle(newTitle: String) {
+        idCardReview = idCardReview?.let { IdCardReviewFlow.renameTitle(it, newTitle) }
+    }
+
+    /** Placeholder for the review screen's help icon: never crashes, never blocks Save. */
+    internal fun idCardReviewHelpTapped() {
+        viewModel.showError("Tap an image to select it, then use Rotate or Crop to adjust it.")
+    }
+
+    /** Placeholder for the review screen's Compare action: never crashes, never blocks Save. */
+    internal fun idCardReviewCompareTapped() {
+        viewModel.showError("Compare is coming soon.")
+    }
+
+    /** Placeholder for the review screen's Add Watermark action: never crashes, never blocks Save. */
+    internal fun idCardReviewAddWatermarkTapped() {
+        viewModel.showError("Watermark is coming soon.")
     }
 
     /** Cancels the ID-card review step entirely, discarding both captured sides. */
@@ -1326,13 +1364,17 @@ class MainActivity : FragmentActivity() {
      */
     internal fun confirmIdCardReview() {
         val review = idCardReview ?: return
-        val title = pendingIdCardReviewTitle
+        val title = review.title
         idCardReview = null
         lifecycleScope.launch {
             val frontUri = bakeIdCardRotation(Uri.parse(review.frontImageUri), review.frontRotationDegrees)
             val backUri = review.backImageUri?.let {
                 bakeIdCardRotation(Uri.parse(it), review.backRotationDegrees)
             }
+            // Both sides are final at this point (enhanced, cropped, rotation baked), so the
+            // combined front+back result page can be rendered up front — the Document Ready
+            // preview then shows exactly the image "Save to gallery" will write.
+            val combinedUri = renderIdCardCombinedImage(frontUri, backUri)
 
             imageImportReview = null
             pendingImageImport = null
@@ -1344,7 +1386,8 @@ class MainActivity : FragmentActivity() {
                 imageUri = frontUri,
                 title = title,
                 backImageUri = backUri,
-                isIdCardScan = true
+                isIdCardScan = true,
+                combinedImageUri = combinedUri
             )
         }
     }
@@ -1359,6 +1402,50 @@ class MainActivity : FragmentActivity() {
                 outputDirectory = File(filesDir, "id_scan_rotated")
             )
         }.getOrNull() ?: uri
+    }
+
+    /**
+     * Renders the single combined ID-card result page (front + back on one white A4-style page,
+     * see [IdCardCombinedPageRenderer]) into app-private storage. Best-effort: a failure returns
+     * null and the preview/gallery paths fall back to the per-side images rather than blocking.
+     */
+    private suspend fun renderIdCardCombinedImage(frontUri: Uri, backUri: Uri?): Uri? {
+        val combined = runCatching {
+            IdCardCombinedPageRenderer.render(
+                context = this,
+                frontUri = frontUri,
+                backUri = backUri,
+                outputDirectory = File(filesDir, "id_card_combined")
+            )
+        }.getOrNull()
+        if (combined == null) {
+            Log.w(TAG, "Unable to render combined ID card result page.")
+        }
+        return combined
+    }
+
+    /**
+     * Re-renders [importedImagePreview]'s combined ID-card page from its current front/back
+     * images. Needed wherever a side image changes after the preview is already showing (the ML
+     * Kit scan path's async enhancement, a re-edit, a signature) so the combined page — the one
+     * image the preview displays and "Save to gallery" writes — never goes stale. The result is
+     * only swapped in if the preview still shows the same sides it was rendered from; a no-op
+     * for every non-ID-card preview.
+     */
+    internal fun refreshIdCardCombinedPreviewImage() {
+        val preview = importedImagePreview ?: return
+        if (!preview.isIdCardScan) return
+        lifecycleScope.launch {
+            val combined = renderIdCardCombinedImage(preview.imageUri, preview.backImageUri)
+                ?: return@launch
+            val current = importedImagePreview ?: return@launch
+            if (current.isIdCardScan &&
+                current.imageUri == preview.imageUri &&
+                current.backImageUri == preview.backImageUri
+            ) {
+                importedImagePreview = current.copy(combinedImageUri = combined)
+            }
+        }
     }
 
     /** Opens the shared crop editor targeting the ID-card review's currently selected side. */

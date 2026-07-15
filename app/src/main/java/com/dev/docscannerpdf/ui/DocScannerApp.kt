@@ -518,6 +518,9 @@ internal fun DocScannerApp(host: MainActivity) {
                                         // update pending/imported states so UI reflects change
                                         host.pendingImageImport = host.pendingImageImport?.copy(imageUri = merged)
                                         host.importedImagePreview = host.importedImagePreview?.copy(imageUri = merged)
+                                        // A signed front invalidates an ID-card scan's combined
+                                        // result page; re-render it. No-op for normal documents.
+                                        host.refreshIdCardCombinedPreviewImage()
                                         host.imageEditorMessage = "Signature applied"
                                     } catch (t: Throwable) {
                                         Log.w(AppConstants.TAG, "Unable to apply signature: ${t.message}")
@@ -570,6 +573,7 @@ internal fun DocScannerApp(host: MainActivity) {
                         rotationDegrees = previewState.rotationDegrees,
                         backImageUri = previewState.backImageUri,
                         isIdCardScan = previewState.isIdCardScan,
+                        combinedImageUri = previewState.combinedImageUri,
                         backendProcessingState = host.scannerBackendProcessingState,
                         validationState = host.scannerFlowValidationState,
                         onProcessWithBackend = host::processImportedPreviewWithBackend,
@@ -608,7 +612,11 @@ internal fun DocScannerApp(host: MainActivity) {
                         onSaveToGallery = {
                             host.lifecycleScope.launch {
                                 try {
-                                    host.saveImageToGallery(previewState.imageUri, previewState.title)
+                                    // ID-card scans save the combined front+back result page —
+                                    // never just the front side. Normal documents have no
+                                    // combined image and keep saving their single page.
+                                    val galleryUri = previewState.combinedImageUri ?: previewState.imageUri
+                                    host.saveImageToGallery(galleryUri, previewState.title)
                                     host.imageEditorMessage = "Saved to gallery"
                                 } catch (t: Throwable) {
                                     Log.w(AppConstants.TAG, "Unable to save to gallery: ${t.message}")
@@ -646,7 +654,7 @@ internal fun DocScannerApp(host: MainActivity) {
                                 // CamScanner-style guided front/back capture instead of the ML
                                 // Kit document scanner UI.
                                 host.startIdCardGuidedCapture(
-                                    titlePrefix = "${host.selectedIdCardCategory} Scan"
+                                    titlePrefix = host.selectedIdCardCategory
                                 )
                             }
                         },
@@ -675,9 +683,13 @@ internal fun DocScannerApp(host: MainActivity) {
                         state = reviewState,
                         onBack = host::cancelIdCardReview,
                         onSelectSide = host::selectIdCardReviewSide,
-                        onRotateSelected = host::rotateSelectedIdCardReviewSide,
+                        onRenameTitle = host::renameIdCardReviewTitle,
+                        onHelp = host::idCardReviewHelpTapped,
+                        onCompare = host::idCardReviewCompareTapped,
                         onCrop = host::openIdCardCropEditor,
-                        onEnhance = host::enhanceSelectedIdCardReviewSide,
+                        onRotate = host::rotateSelectedIdCardReviewSide,
+                        onFilter = host::enhanceSelectedIdCardReviewSide,
+                        onAddWatermark = host::idCardReviewAddWatermarkTapped,
                         onSave = host::confirmIdCardReview
                     )
                 } else if (host.multiPageEditorState != null) {

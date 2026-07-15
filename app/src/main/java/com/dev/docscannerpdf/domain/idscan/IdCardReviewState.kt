@@ -16,7 +16,8 @@ data class IdCardReviewState(
     val backImageUri: String? = null,
     val frontRotationDegrees: Int = 0,
     val backRotationDegrees: Int = 0,
-    val selectedSide: IdCardReviewSide = IdCardReviewSide.FRONT
+    val selectedSide: IdCardReviewSide = IdCardReviewSide.FRONT,
+    val title: String = "ID Card"
 ) {
     fun imageUri(side: IdCardReviewSide): String? = when (side) {
         IdCardReviewSide.FRONT -> frontImageUri
@@ -56,4 +57,14 @@ object IdCardReviewFlow {
             IdCardReviewSide.FRONT -> state.copy(frontImageUri = imageUri)
             IdCardReviewSide.BACK -> state.copy(backImageUri = imageUri)
         }
+
+    /**
+     * Renames the review's title (the CamScanner-style pencil-edit action next to the title).
+     * A blank/whitespace-only [newTitle] is a no-op — the title driving the eventually-saved
+     * document must never end up empty.
+     */
+    fun renameTitle(state: IdCardReviewState, newTitle: String): IdCardReviewState {
+        val trimmed = newTitle.trim()
+        return if (trimmed.isBlank()) state else state.copy(title = trimmed)
+    }
 }

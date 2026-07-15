@@ -1,5 +1,7 @@
 package com.dev.docscannerpdf.ui
 
+import android.Manifest
+import android.content.pm.PackageManager
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
@@ -110,12 +112,19 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.camera.view.PreviewView
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.core.content.ContextCompat
+import com.dev.docscannerpdf.ui.idcard.DarkSystemBarsEffect
+import com.dev.docscannerpdf.ui.idcard.IdCardCameraController
 
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -1049,10 +1058,12 @@ private fun ScannerTopSection(
 }
 
 /**
- * ID Cards entry screen, styled to resemble CamScanner's "ID Cards" flow: a light page with a
- * static paper-mock preview (an ID card resting on an A4 sheet), category chips, and a prominent
- * primary action. Purely a visual layer — [onMakeItNow] still drives the existing
- * [com.google.mlkit.vision.documentscanner.GmsDocumentScanner] capture path unchanged.
+ * ID Cards entry screen, styled to resemble CamScanner's "ID Cards" flow: a camera-backed dark
+ * overlay (a dimmed live camera preview behind the content, when camera permission is already
+ * granted — this screen never itself prompts for it) with a floating A4-paper-mock preview, dark
+ * translucent category chips, a green primary action, and a decorative bottom tool rail with "ID
+ * Cards" highlighted. Purely a visual layer — [onMakeItNow] still drives the existing guided
+ * capture path unchanged.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -1064,213 +1075,294 @@ fun IdCardFeatureScreen(
     onMakeItNow: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    DarkSystemBarsEffect()
+
     val tabs = listOf("General", "ID Card", "Driver License", "Passport", "Bank Card")
 
-    val pageBackground = Color(0xFFF3F4F7)
     val paperColor = Color.White
-    val paperBorder = Color(0xFFE4E6EC)
     val labelChipColor = Color(0xFFEFF1F5)
-    val textDark = Color(0xFF1B1D22)
     val textMuted = Color(0xFF6B7280)
-    val primaryBlue = Color(0xFF1E66E5)
+    val greenAccent = Color(0xFF16C89A)
     val idMockFill = Color(0xFFE4ECFB)
     val idMockBorder = Color(0xFFC2D3F2)
     val idMockLineStrong = Color(0xFFB0C4EA)
     val idMockLineSoft = Color(0xFFCBD8F0)
-    val chipUnselectedBg = Color(0xFFEDEEF2)
-    val chipUnselectedLabel = Color(0xFF5B6270)
+    val chipUnselectedBg = Color(0x33FFFFFF)
+    val chipUnselectedLabel = Color(0xFFE3E5EA)
 
-    Column(
+    val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val hasCameraPermission = remember {
+        ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) ==
+            PackageManager.PERMISSION_GRANTED
+    }
+
+    Box(
         modifier = modifier
             .fillMaxSize()
-            .background(pageBackground)
+            .background(Color.Black)
     ) {
-        TopAppBar(
-            navigationIcon = {
-                IconButton(onClick = onBack) {
-                    Icon(
-                        imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                        contentDescription = "Back",
-                        tint = textDark
-                    )
-                }
-            },
-            title = {
-                Text(
-                    text = "ID Cards",
-                    style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.SemiBold,
-                    color = textDark
-                )
-            },
-            colors = TopAppBarDefaults.topAppBarColors(
-                containerColor = pageBackground,
-                titleContentColor = textDark,
-                navigationIconContentColor = textDark
+        if (hasCameraPermission) {
+            val controller = remember(lifecycleOwner) {
+                IdCardCameraController(context = context, lifecycleOwner = lifecycleOwner)
+            }
+            AndroidView(
+                modifier = Modifier.fillMaxSize(),
+                factory = { ctx -> PreviewView(ctx).also { previewView -> controller.bind(previewView) } }
             )
-        )
-
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .navigationBarsPadding()
-                .padding(horizontal = 16.dp, vertical = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
-        ) {
-            // Static A4-paper mock: a light "sheet" with an ID-card-shaped preview resting on
-            // it, in place of the previous dark placeholder box. Purely decorative Compose
-            // shapes — no bitmap assets, no real card data involved.
-            Surface(
+            DisposableEffect(controller) {
+                onDispose { controller.unbind() }
+            }
+            // Dims the live feed so the dark chrome/text on top of it stays readable, matching
+            // CamScanner's camera-backed-but-legible entry screen instead of a full-brightness feed.
+            Box(
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .height(260.dp)
-                    .clip(RoundedCornerShape(18.dp))
-                    .border(1.dp, paperBorder, RoundedCornerShape(18.dp)),
-                color = paperColor,
-                shadowElevation = 2.dp
-            ) {
-                Box(modifier = Modifier.fillMaxSize()) {
-                    Surface(
-                        modifier = Modifier
-                            .align(Alignment.TopStart)
-                            .padding(14.dp),
-                        shape = RoundedCornerShape(8.dp),
-                        color = labelChipColor
-                    ) {
-                        Text(
-                            text = "A4 paper example",
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                            style = MaterialTheme.typography.labelSmall,
-                            fontWeight = FontWeight.SemiBold,
-                            color = textMuted
+                    .fillMaxSize()
+                    .background(Color(0xCC0B0C0E))
+            )
+        }
+
+        Column(modifier = Modifier.fillMaxSize()) {
+            TopAppBar(
+                navigationIcon = {
+                    IconButton(onClick = onBack) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = "Back",
+                            tint = Color.White
                         )
                     }
+                },
+                title = {
+                    Text(
+                        text = "ID Cards",
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.SemiBold,
+                        color = Color.White
+                    )
+                },
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = Color.Transparent,
+                    titleContentColor = Color.White,
+                    navigationIconContentColor = Color.White
+                )
+            )
 
-                    // Mock ID card (standard ~1.586:1 card aspect ratio) centered on the sheet.
-                    Surface(
-                        modifier = Modifier
-                            .align(Alignment.Center)
-                            .width(220.dp)
-                            .height(139.dp)
-                            .clip(RoundedCornerShape(14.dp))
-                            .border(1.dp, idMockBorder, RoundedCornerShape(14.dp)),
-                        color = idMockFill,
-                        shadowElevation = 3.dp
-                    ) {
-                        Column(
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .navigationBarsPadding()
+                    .padding(horizontal = 16.dp, vertical = 16.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                // Floating A4-paper mock: a light "sheet" with an ID-card-shaped preview resting
+                // on it, floating over the dark/camera-backed overlay behind it. Purely decorative
+                // Compose shapes — no bitmap assets, no real card data involved.
+                Surface(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(240.dp)
+                        .clip(RoundedCornerShape(18.dp)),
+                    color = paperColor,
+                    shadowElevation = 8.dp
+                ) {
+                    Box(modifier = Modifier.fillMaxSize()) {
+                        Surface(
                             modifier = Modifier
-                                .fillMaxSize()
-                                .padding(16.dp),
-                            verticalArrangement = Arrangement.SpaceBetween
+                                .align(Alignment.TopStart)
+                                .padding(14.dp),
+                            shape = RoundedCornerShape(8.dp),
+                            color = labelChipColor
                         ) {
-                            Row(
-                                horizontalArrangement = Arrangement.spacedBy(10.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Filled.CreditCard,
-                                    contentDescription = null,
-                                    tint = primaryBlue,
-                                    modifier = Modifier.size(24.dp)
-                                )
-                                Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
-                                    Box(
-                                        Modifier
-                                            .width(72.dp)
-                                            .height(6.dp)
-                                            .clip(RoundedCornerShape(3.dp))
-                                            .background(idMockLineStrong)
-                                    )
-                                    Box(
-                                        Modifier
-                                            .width(48.dp)
-                                            .height(6.dp)
-                                            .clip(RoundedCornerShape(3.dp))
-                                            .background(idMockLineSoft)
-                                    )
-                                }
-                            }
-                            Box(
-                                Modifier
-                                    .width(112.dp)
-                                    .height(6.dp)
-                                    .clip(RoundedCornerShape(3.dp))
-                                    .background(idMockLineSoft)
+                            Text(
+                                text = "A4 paper example",
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.SemiBold,
+                                color = textMuted
                             )
+                        }
+
+                        // Mock ID card (standard ~1.586:1 card aspect ratio) centered on the sheet.
+                        Surface(
+                            modifier = Modifier
+                                .align(Alignment.Center)
+                                .width(210.dp)
+                                .height(132.dp)
+                                .clip(RoundedCornerShape(14.dp))
+                                .border(1.dp, idMockBorder, RoundedCornerShape(14.dp)),
+                            color = idMockFill,
+                            shadowElevation = 3.dp
+                        ) {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .padding(16.dp),
+                                verticalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Row(
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Filled.CreditCard,
+                                        contentDescription = null,
+                                        tint = greenAccent,
+                                        modifier = Modifier.size(24.dp)
+                                    )
+                                    Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                                        Box(
+                                            Modifier
+                                                .width(72.dp)
+                                                .height(6.dp)
+                                                .clip(RoundedCornerShape(3.dp))
+                                                .background(idMockLineStrong)
+                                        )
+                                        Box(
+                                            Modifier
+                                                .width(48.dp)
+                                                .height(6.dp)
+                                                .clip(RoundedCornerShape(3.dp))
+                                                .background(idMockLineSoft)
+                                        )
+                                    }
+                                }
+                                Box(
+                                    Modifier
+                                        .width(112.dp)
+                                        .height(6.dp)
+                                        .clip(RoundedCornerShape(3.dp))
+                                        .background(idMockLineSoft)
+                                )
+                            }
                         }
                     }
                 }
-            }
 
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                tabs.forEach { tab ->
-                    val selected = selectedType == tab
-                    FilterChip(
-                        selected = selected,
-                        onClick = { onSelectType(tab) },
-                        label = {
-                            Text(
-                                text = tab,
-                                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    tabs.forEach { tab ->
+                        val selected = selectedType == tab
+                        FilterChip(
+                            selected = selected,
+                            onClick = { onSelectType(tab) },
+                            label = {
+                                Text(
+                                    text = tab,
+                                    fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal
+                                )
+                            },
+                            colors = FilterChipDefaults.filterChipColors(
+                                containerColor = chipUnselectedBg,
+                                labelColor = chipUnselectedLabel,
+                                selectedContainerColor = greenAccent,
+                                selectedLabelColor = Color.White
                             )
-                        },
-                        colors = FilterChipDefaults.filterChipColors(
-                            containerColor = chipUnselectedBg,
-                            labelColor = chipUnselectedLabel,
-                            selectedContainerColor = primaryBlue,
-                            selectedLabelColor = Color.White
                         )
+                    }
+                }
+
+                Text(
+                    text = "Create and share ID copies for various situations, including banking, administration, and more.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = Color(0xFFC7CAD1)
+                )
+                TextButton(onClick = { /* Learn more action can be added later */ }) {
+                    Text(
+                        text = "Learn more >",
+                        color = greenAccent
                     )
                 }
+
+                if (!validationMessage.isNullOrBlank()) {
+                    Text(
+                        text = validationMessage,
+                        color = Color(0xFFFF6B6B),
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.padding(vertical = 4.dp)
+                    )
+                }
+
+                Spacer(modifier = Modifier.weight(1f))
+
+                Button(
+                    onClick = onMakeItNow,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(52.dp),
+                    shape = RoundedCornerShape(14.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = greenAccent,
+                        contentColor = Color.White
+                    )
+                ) {
+                    Text(text = "Make it now", fontWeight = FontWeight.SemiBold)
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+                IdCardBottomToolRail()
+
+                // Reserved space for a future bottom banner ad (standard AdMob banner is ~50dp
+                // tall) plus margin, so the rail sits clearly above the ad area instead of right
+                // at the screen edge.
+                Spacer(modifier = Modifier.height(AdBannerSafeSpace))
             }
-
-            Text(
-                text = "Create and share ID copies for various situations, including banking, administration, and more.",
-                style = MaterialTheme.typography.bodyMedium,
-                color = textMuted
-            )
-            TextButton(onClick = { /* Learn more action can be added later */ }) {
-                Text(
-                    text = "Learn more >",
-                    color = primaryBlue
-                )
-            }
-
-            if (!validationMessage.isNullOrBlank()) {
-                Text(
-                    text = validationMessage,
-                    color = Color(0xFFD32F2F),
-                    style = MaterialTheme.typography.bodySmall,
-                    modifier = Modifier.padding(vertical = 4.dp)
-                )
-            }
-
-            Spacer(modifier = Modifier.weight(1f))
-
-            Button(
-                onClick = onMakeItNow,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(52.dp),
-                shape = RoundedCornerShape(14.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = primaryBlue,
-                    contentColor = Color.White
-                )
-            ) {
-                Text(text = "Make it now", fontWeight = FontWeight.SemiBold)
-            }
-
-            // Reserved space for a future bottom banner ad (standard AdMob banner is ~50dp
-            // tall) plus margin, so the button sits clearly above the ad area instead of
-            // right at the screen edge.
-            Spacer(modifier = Modifier.height(AdBannerSafeSpace))
         }
+    }
+}
+
+/**
+ * Decorative bottom tool rail matching CamScanner's entry-screen chrome, with "ID Cards"
+ * highlighted as the active tool. The other entries are visual-only placeholders (no navigation
+ * wiring) — this screen is only ever reached already inside the ID Cards flow.
+ */
+@Composable
+private fun IdCardBottomToolRail() {
+    val greenAccent = Color(0xFF16C89A)
+    val muted = Color(0xFF8A8F99)
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp)),
+        color = Color(0x1AFFFFFF)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 10.dp),
+            horizontalArrangement = Arrangement.SpaceEvenly,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            IdCardBottomToolRailItem(icon = Icons.Filled.DocumentScanner, label = "Scan", tint = muted)
+            IdCardBottomToolRailItem(icon = Icons.Filled.CreditCard, label = "ID Cards", tint = greenAccent, active = true)
+            IdCardBottomToolRailItem(icon = Icons.Filled.PictureAsPdf, label = "PDF Tools", tint = muted)
+            IdCardBottomToolRailItem(icon = Icons.Filled.Apps, label = "More", tint = muted)
+        }
+    }
+}
+
+@Composable
+private fun IdCardBottomToolRailItem(
+    icon: ImageVector,
+    label: String,
+    tint: Color,
+    active: Boolean = false
+) {
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(3.dp)
+    ) {
+        Icon(imageVector = icon, contentDescription = label, tint = tint, modifier = Modifier.size(20.dp))
+        Text(
+            text = label,
+            color = tint,
+            style = MaterialTheme.typography.labelSmall,
+            fontWeight = if (active) FontWeight.Bold else FontWeight.Normal
+        )
     }
 }
 

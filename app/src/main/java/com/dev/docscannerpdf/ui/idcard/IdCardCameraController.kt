@@ -26,6 +26,7 @@ class IdCardCameraController(
     private val mainExecutor = ContextCompat.getMainExecutor(context)
     private var cameraProvider: ProcessCameraProvider? = null
     private var imageCapture: ImageCapture? = null
+    private var pendingFlashMode: Int = ImageCapture.FLASH_MODE_OFF
 
     /** Binds preview + still-capture to the camera lifecycle. */
     fun bind(previewView: PreviewView) {
@@ -39,6 +40,7 @@ class IdCardCameraController(
             }
             val capture = ImageCapture.Builder()
                 .setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
+                .setFlashMode(pendingFlashMode)
                 .build()
             imageCapture = capture
 
@@ -82,6 +84,12 @@ class IdCardCameraController(
                 }
             }
         )
+    }
+
+    /** Sets the flash mode (one of [ImageCapture]'s `FLASH_MODE_*` constants) for future captures. */
+    fun setFlashMode(mode: Int) {
+        pendingFlashMode = mode
+        imageCapture?.flashMode = mode
     }
 
     fun unbind() {
