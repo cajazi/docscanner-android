@@ -688,7 +688,7 @@ internal fun DocScannerApp(host: MainActivity) {
                         onCompare = host::idCardReviewCompareTapped,
                         onCrop = host::openIdCardCropEditor,
                         onRotate = host::rotateSelectedIdCardReviewSide,
-                        onFilter = host::enhanceSelectedIdCardReviewSide,
+                        onSelectFilter = host::applyIdCardReviewFilter,
                         onAddWatermark = host::idCardReviewAddWatermarkTapped,
                         onSave = host::confirmIdCardReview
                     )

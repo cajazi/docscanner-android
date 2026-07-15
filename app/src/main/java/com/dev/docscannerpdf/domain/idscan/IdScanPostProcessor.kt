@@ -5,13 +5,12 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Color
-import android.graphics.ColorMatrix
-import android.graphics.ColorMatrixColorFilter
 import android.graphics.Matrix
 import android.graphics.Paint
 import android.media.ExifInterface
 import android.net.Uri
 import com.dev.docscannerpdf.domain.crop.PerspectiveGeometry
+import com.dev.docscannerpdf.domain.filter.DocumentFilterPrimitives
 import com.dev.docscannerpdf.domain.crop.PerspectiveTransformEngine
 import com.dev.docscannerpdf.domain.detection.DocumentEdgeDetector
 import com.dev.docscannerpdf.ui.detection.LumaFrameFactory
@@ -213,82 +212,14 @@ object IdScanPostProcessor {
         return sharpened
     }
 
-    private fun applyContrast(source: Bitmap, amount: Float): Bitmap {
-        val translate = (-0.5f * amount + 0.5f) * 255f
-        val matrix = ColorMatrix(
-            floatArrayOf(
-                amount, 0f, 0f, 0f, translate,
-                0f, amount, 0f, 0f, translate,
-                0f, 0f, amount, 0f, translate,
-                0f, 0f, 0f, 1f, 0f
-            )
-        )
-        val output = Bitmap.createBitmap(source.width, source.height, Bitmap.Config.ARGB_8888)
-        val canvas = Canvas(output)
-        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            colorFilter = ColorMatrixColorFilter(matrix)
-        }
-        canvas.drawBitmap(source, 0f, 0f, paint)
-        return output
-    }
+    // Contrast and sharpen are the shared, single-implementation primitives in
+    // [DocumentFilterPrimitives] — extracted from here verbatim so the user-selectable document
+    // filters and this ID-scan auto-enhance can never drift apart. The Config defaults
+    // (contrastBoost 1.12, sharpenStrength 0.18) are unchanged, so this object's output for a
+    // given input is identical to before the extraction.
+    private fun applyContrast(source: Bitmap, amount: Float): Bitmap =
+        DocumentFilterPrimitives.applyContrast(source, amount)
 
-    /**
-     * Lightweight unsharp-mask-style 3x3 convolution over bulk pixel arrays (no per-pixel
-     * getPixel/setPixel calls, no native/RenderScript dependency) — cheap and deterministic
-     * enough to run inline on a single scan's image, and bounded to 0..255 per channel so a mild
-     * [strength] can never overflow into visible artifacts.
-     */
-    private fun applySharpen(source: Bitmap, strength: Float): Bitmap {
-        val width = source.width
-        val height = source.height
-        if (width < 3 || height < 3) return source
-
-        val pixels = IntArray(width * height)
-        source.getPixels(pixels, 0, width, 0, 0, width, height)
-        val output = IntArray(pixels.size)
-
-        val center = 1f + 4f * strength
-        val edge = -strength
-
-        for (y in 0 until height) {
-            for (x in 0 until width) {
-                val idx = y * width + x
-                if (x == 0 || y == 0 || x == width - 1 || y == height - 1) {
-                    output[idx] = pixels[idx]
-                    continue
-                }
-                val p = pixels[idx]
-                val up = pixels[idx - width]
-                val down = pixels[idx + width]
-                val left = pixels[idx - 1]
-                val right = pixels[idx + 1]
-
-                val r = sharpenChannel(p, up, down, left, right, center, edge, 16)
-                val g = sharpenChannel(p, up, down, left, right, center, edge, 8)
-                val b = sharpenChannel(p, up, down, left, right, center, edge, 0)
-                val a = (p ushr 24) and 0xFF
-
-                output[idx] = (a shl 24) or (r shl 16) or (g shl 8) or b
-            }
-        }
-
-        val result = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-        result.setPixels(output, 0, width, 0, 0, width, height)
-        return result
-    }
-
-    private fun sharpenChannel(
-        p: Int,
-        up: Int,
-        down: Int,
-        left: Int,
-        right: Int,
-        center: Float,
-        edge: Float,
-        shift: Int
-    ): Int {
-        fun channel(pixel: Int) = (pixel ushr shift) and 0xFF
-        val value = center * channel(p) + edge * (channel(up) + channel(down) + channel(left) + channel(right))
-        return value.toInt().coerceIn(0, 255)
-    }
+    private fun applySharpen(source: Bitmap, strength: Float): Bitmap =
+        DocumentFilterPrimitives.applySharpen(source, strength)
 }
