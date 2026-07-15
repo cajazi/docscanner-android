@@ -6,18 +6,23 @@ import com.dev.docscannerpdf.util.AppConstants
 import kotlin.math.roundToInt
 
 /**
- * Where one ID-card side lands on the combined result page: [cardRect] is the fixed,
- * card-shaped slot from [IdCardLayoutPlanner], and [imageRect] is the side's photo scaled to
- * fit (never cropped or stretched) and centered inside that slot — the same rule
- * [com.dev.docscannerpdf.domain.pdf.PdfCoordinateMapper.imageDestinationRect] applies for the
- * PDF export, so the rasterized page and the exported PDF place each photo identically.
+ * Where one ID-card side lands on the combined result page. [cardRect] is the fixed, card-shaped
+ * slot from [IdCardLayoutPlanner] and is the side's COMPLETE destination — every side is drawn
+ * filling its whole slot, so front and back always render at exactly the same visible size.
+ * [sourceCropRect] is the centered region of the source photo (in that photo's own pixel space)
+ * whose aspect ratio matches the slot: drawing that region into [cardRect] preserves proportions
+ * (never stretches) and crops only the excess dimension. Aspect-FITTING into a smaller
+ * destination was deliberately abandoned: with slightly different front/back source ratios it
+ * shrank one side more than the other, and the white letterbox blended into the white page,
+ * making the cards visibly different sizes.
  */
-data class IdCardCombinedSideDraw(val cardRect: CardRect, val imageRect: CardRect)
+data class IdCardCombinedSideDraw(val cardRect: CardRect, val sourceCropRect: CardRect)
 
 /**
  * Full layout for the combined CamScanner-style ID-card result page: front (and back, when
- * captured) on one white A4-proportioned page. All values are pixels in the output bitmap's
- * space.
+ * captured) on one white A4-proportioned page. [pageWidth]/[pageHeight] and every [CardRect] in
+ * [front]/[back] are pixels in the output bitmap's space, except each side's
+ * [IdCardCombinedSideDraw.sourceCropRect], which is in that side's source-image pixel space.
  */
 data class IdCardCombinedPagePlan(
     val pageWidth: Int,
@@ -73,12 +78,12 @@ object IdCardCombinedPagePlanner {
             pageHeight = pageHeight,
             front = IdCardCombinedSideDraw(
                 cardRect = cardRects[0],
-                imageRect = fitWithin(cardRects[0], frontImageWidth, frontImageHeight)
+                sourceCropRect = sourceCoverCrop(cardRects[0], frontImageWidth, frontImageHeight)
             ),
             back = if (backImageWidth != null && backImageHeight != null) {
                 IdCardCombinedSideDraw(
                     cardRect = cardRects[1],
-                    imageRect = fitWithin(cardRects[1], backImageWidth, backImageHeight)
+                    sourceCropRect = sourceCoverCrop(cardRects[1], backImageWidth, backImageHeight)
                 )
             } else {
                 null
@@ -87,20 +92,37 @@ object IdCardCombinedPagePlanner {
     }
 
     /**
-     * Scales an [imageWidth] x [imageHeight] photo to fit inside [rect] preserving aspect ratio
-     * (never cropped or stretched), centered — the same centered-fit rule
-     * [com.dev.docscannerpdf.domain.pdf.PdfCoordinateMapper.imageDestinationRect] uses, restated
-     * here on [CardRect] so this planner stays free of android.graphics types.
+     * The centered region of an [imageWidth] x [imageHeight] photo whose aspect ratio matches
+     * [slot]'s — the source rect of a center-crop-to-fill draw into the complete slot. The image
+     * is never stretched: only the dimension that overflows the slot's ratio is trimmed, equally
+     * from both edges. The result is always inside the image bounds and at least 1x1. Shared by
+     * the combined-page renderer and the ID-card PDF export so every surface fills its equal-size
+     * card slot the same way.
      */
-    private fun fitWithin(rect: CardRect, imageWidth: Int, imageHeight: Int): CardRect {
-        val scale = minOf(rect.width / imageWidth, rect.height / imageHeight)
-        val width = imageWidth * scale
-        val height = imageHeight * scale
-        return CardRect(
-            left = rect.left + (rect.width - width) / 2f,
-            top = rect.top + (rect.height - height) / 2f,
-            width = width,
-            height = height
-        )
+    fun sourceCoverCrop(slot: CardRect, imageWidth: Int, imageHeight: Int): CardRect {
+        require(imageWidth > 0 && imageHeight > 0) { "Image dimensions must be positive." }
+        require(slot.width > 0f && slot.height > 0f) { "Slot dimensions must be positive." }
+
+        val slotRatio = slot.width / slot.height
+        val imageRatio = imageWidth.toFloat() / imageHeight
+        return if (imageRatio > slotRatio) {
+            // Image is wider than the slot: full height, trim the sides.
+            val cropWidth = (imageHeight * slotRatio).coerceIn(1f, imageWidth.toFloat())
+            CardRect(
+                left = (imageWidth - cropWidth) / 2f,
+                top = 0f,
+                width = cropWidth,
+                height = imageHeight.toFloat()
+            )
+        } else {
+            // Image is taller than the slot: full width, trim top and bottom.
+            val cropHeight = (imageWidth / slotRatio).coerceIn(1f, imageHeight.toFloat())
+            CardRect(
+                left = 0f,
+                top = (imageHeight - cropHeight) / 2f,
+                width = imageWidth.toFloat(),
+                height = cropHeight
+            )
+        }
     }
 }

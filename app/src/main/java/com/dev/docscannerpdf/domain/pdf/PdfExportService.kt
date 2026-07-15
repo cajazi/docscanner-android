@@ -14,6 +14,7 @@ import com.dev.docscannerpdf.domain.annotation.Annotation
 import com.dev.docscannerpdf.domain.annotation.AnnotationStroke
 import com.dev.docscannerpdf.domain.annotation.AnnotationText
 import com.dev.docscannerpdf.domain.annotation.AnnotationType
+import com.dev.docscannerpdf.domain.idscan.IdCardCombinedPagePlanner
 import com.dev.docscannerpdf.network.NetworkClient
 import com.dev.docscannerpdf.util.AppConstants
 import kotlinx.coroutines.Dispatchers
@@ -21,6 +22,7 @@ import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.File
+import kotlin.math.roundToInt
 
 /**
  * Produces a CamScanner-style searchable PDF from already-processed document pages.
@@ -127,10 +129,14 @@ class PdfExportService(
     }
 
     /**
-     * Draws [bitmap] scaled to fit (never stretched) within the fixed, ID-card-shaped [rect],
-     * then labels it with [side]'s name just above the card. Reusing [PdfCoordinateMapper] scoped
-     * to the card rect keeps front and back on the exact same centered-fit rule the single-image
-     * export uses, just confined to a card-sized box instead of the whole page.
+     * Draws [bitmap] center-crop-FILLING the complete fixed, ID-card-shaped [rect] — the same
+     * [IdCardCombinedPagePlanner.sourceCoverCrop] rule the combined gallery image uses, so PDF,
+     * preview, and gallery agree — then labels it with [side]'s name just above the card.
+     * Proportions are preserved and only the excess dimension is trimmed (never stretched);
+     * filling the whole equal-size slot is what keeps front and back at identical visible sizes.
+     * An aspect-FIT here let slightly different front/back source ratios render one card
+     * visibly smaller, its white letterbox invisible against the white page. Only the ID-card
+     * export uses this; normal document pages keep their full-page centered-fit rule.
      */
     private fun drawSideInRect(
         canvas: Canvas,
@@ -138,19 +144,19 @@ class PdfExportService(
         side: IdCardSide,
         rect: CardRect
     ) {
-        val fitted = PdfCoordinateMapper.imageDestinationRect(
-            pageWidth = rect.width,
-            pageHeight = rect.height,
+        val crop = IdCardCombinedPagePlanner.sourceCoverCrop(
+            slot = rect,
             imageWidth = bitmap.width,
             imageHeight = bitmap.height
         )
-        val destination = android.graphics.RectF(
-            rect.left + fitted.left,
-            rect.top + fitted.top,
-            rect.left + fitted.right,
-            rect.top + fitted.bottom
+        val source = android.graphics.Rect(
+            crop.left.roundToInt().coerceIn(0, bitmap.width - 1),
+            crop.top.roundToInt().coerceIn(0, bitmap.height - 1),
+            crop.right.roundToInt().coerceIn(1, bitmap.width),
+            crop.bottom.roundToInt().coerceIn(1, bitmap.height)
         )
-        canvas.drawBitmap(bitmap, null, destination, Paint(Paint.ANTI_ALIAS_FLAG))
+        val destination = android.graphics.RectF(rect.left, rect.top, rect.right, rect.bottom)
+        canvas.drawBitmap(bitmap, source, destination, Paint(Paint.ANTI_ALIAS_FLAG))
         val labelPaint = Paint().apply {
             color = Color.DKGRAY
             textSize = SIDE_LABEL_TEXT_SIZE

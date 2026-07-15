@@ -904,12 +904,15 @@ private fun IdCardSidePreviewTile(
                 .weight(1f)
                 .fillMaxWidth()
         ) {
+            // Crop (fill the tile), matching the combined page's center-crop-to-fill rule: with
+            // Fit, sides whose source ratios differ slightly rendered at visibly different sizes
+            // (white letterbox on white page) during the moments this fallback is on screen.
             ImportedImageBitmap(
                 uri = imageUri,
                 modifier = Modifier
                     .fillMaxSize()
                     .graphicsLayer { rotationZ = rotationDegrees },
-                contentScale = ContentScale.Fit
+                contentScale = ContentScale.Crop
             )
         }
     }

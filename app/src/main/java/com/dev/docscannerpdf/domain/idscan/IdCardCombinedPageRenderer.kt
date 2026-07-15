@@ -6,11 +6,13 @@ import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
+import android.graphics.Rect
 import android.graphics.RectF
 import android.net.Uri
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
+import kotlin.math.roundToInt
 
 /**
  * Rasterizes the CamScanner-style combined ID-card result: front (and back, when captured) as
@@ -19,7 +21,10 @@ import java.io.File
  * "Save to gallery" writes out, so what the user sees is pixel-identical to what gets saved —
  * and, because the layout comes from [IdCardCombinedPagePlanner] (which reuses
  * [com.dev.docscannerpdf.domain.pdf.IdCardLayoutPlanner]), it visually matches the exported PDF
- * page too. Drawing never stretches a side: each photo is aspect-fit inside its card slot.
+ * page too. Each side center-crop-FILLS its complete equal-size card slot (proportions
+ * preserved, only the excess dimension trimmed, never stretched), so front and back always
+ * appear at exactly the same visible size — aspect-fitting instead let slightly different
+ * source ratios shrink one side's visible card relative to the other.
  */
 object IdCardCombinedPageRenderer {
 
@@ -76,16 +81,27 @@ object IdCardCombinedPageRenderer {
         }
     }
 
+    /**
+     * Draws the plan's centered source crop into the side's COMPLETE card slot: the destination
+     * is always the full [IdCardCombinedSideDraw.cardRect] — never a reduced aspect-fit rect —
+     * which is what guarantees front and back render at identical visible sizes.
+     */
     private fun drawSide(canvas: Canvas, bitmap: Bitmap, draw: IdCardCombinedSideDraw) {
+        val source = Rect(
+            draw.sourceCropRect.left.roundToInt().coerceIn(0, bitmap.width - 1),
+            draw.sourceCropRect.top.roundToInt().coerceIn(0, bitmap.height - 1),
+            draw.sourceCropRect.right.roundToInt().coerceIn(1, bitmap.width),
+            draw.sourceCropRect.bottom.roundToInt().coerceIn(1, bitmap.height)
+        )
         val destination = RectF(
-            draw.imageRect.left,
-            draw.imageRect.top,
-            draw.imageRect.right,
-            draw.imageRect.bottom
+            draw.cardRect.left,
+            draw.cardRect.top,
+            draw.cardRect.right,
+            draw.cardRect.bottom
         )
         canvas.drawBitmap(
             bitmap,
-            null,
+            source,
             destination,
             Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
         )
