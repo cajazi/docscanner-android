@@ -48,6 +48,123 @@ class IdCardCombinedPagePlannerTest {
     }
 
     @Test
+    fun frontAndBackDestinationRectsAreExactlyEqualInSize() {
+        // Deliberately different source ratios: the DESTINATION must still be the two equal
+        // card slots — never a per-side shrunken fit rect.
+        val plan = IdCardCombinedPagePlanner.plan(
+            pageWidth = pageWidth,
+            frontImageWidth = 1600,
+            frontImageHeight = 1000,
+            backImageWidth = 1400,
+            backImageHeight = 1000
+        )
+
+        val back = plan.back
+        assertNotNull(back)
+        requireNotNull(back)
+        assertEquals(plan.front.cardRect.width, back.cardRect.width, 0f)
+        assertEquals(plan.front.cardRect.height, back.cardRect.height, 0f)
+    }
+
+    @Test
+    fun landscapeImagesWithSlightlyDifferentRatiosFillEqualSlots() {
+        // 1.6 vs 1.55 — the exact device-QA failure mode. Each crop must match its slot's
+        // ratio so the drawn content fills the complete slot with no letterbox.
+        val plan = IdCardCombinedPagePlanner.plan(
+            pageWidth = pageWidth,
+            frontImageWidth = 1600,
+            frontImageHeight = 1000,
+            backImageWidth = 1550,
+            backImageHeight = 1000
+        )
+
+        val back = plan.back
+        requireNotNull(back)
+        assertCropMatchesSlotRatio(plan.front)
+        assertCropMatchesSlotRatio(back)
+        assertCropInsideSource(plan.front.sourceCropRect, 1600, 1000)
+        assertCropInsideSource(back.sourceCropRect, 1550, 1000)
+    }
+
+    @Test
+    fun portraitSourceIsCenterCroppedWithoutStretching() {
+        val imageWidth = 1000
+        val imageHeight = 1600
+        val plan = IdCardCombinedPagePlanner.plan(
+            pageWidth = pageWidth,
+            frontImageWidth = imageWidth,
+            frontImageHeight = imageHeight
+        )
+
+        val crop = plan.front.sourceCropRect
+        // A portrait source keeps its full width; only height is trimmed.
+        assertEquals(imageWidth.toFloat(), crop.width, 0.001f)
+        assertTrue(crop.height < imageHeight)
+        // Trimmed equally from top and bottom (centered).
+        assertEquals(crop.top, imageHeight - crop.bottom, 0.01f)
+        assertCropMatchesSlotRatio(plan.front)
+        assertCropInsideSource(crop, imageWidth, imageHeight)
+    }
+
+    @Test
+    fun widerThanCardSourceIsCenterCroppedHorizontally() {
+        val imageWidth = 3200
+        val imageHeight = 1000
+        val plan = IdCardCombinedPagePlanner.plan(
+            pageWidth = pageWidth,
+            frontImageWidth = imageWidth,
+            frontImageHeight = imageHeight
+        )
+
+        val crop = plan.front.sourceCropRect
+        // A too-wide source keeps its full height; only width is trimmed.
+        assertEquals(imageHeight.toFloat(), crop.height, 0.001f)
+        assertTrue(crop.width < imageWidth)
+        // Trimmed equally from left and right (centered).
+        assertEquals(crop.left, imageWidth - crop.right, 0.01f)
+        assertCropMatchesSlotRatio(plan.front)
+        assertCropInsideSource(crop, imageWidth, imageHeight)
+    }
+
+    @Test
+    fun cropRectsStayInsideSourceBoundsAcrossShapes() {
+        val shapes = listOf(
+            1600 to 1000,
+            1000 to 1600,
+            1586 to 1000,
+            50 to 4000,
+            4000 to 50,
+            1 to 1
+        )
+        shapes.forEach { (width, height) ->
+            val plan = IdCardCombinedPagePlanner.plan(
+                pageWidth = pageWidth,
+                frontImageWidth = width,
+                frontImageHeight = height
+            )
+            assertCropInsideSource(plan.front.sourceCropRect, width, height)
+            assertTrue(plan.front.sourceCropRect.width >= 1f)
+            assertTrue(plan.front.sourceCropRect.height >= 1f)
+        }
+    }
+
+    @Test
+    fun cardRatioMatchedSourceIsNotCroppedAtAll() {
+        // An image already at the slot's ratio should use (almost) its full area.
+        val plan = IdCardCombinedPagePlanner.plan(
+            pageWidth = pageWidth,
+            frontImageWidth = 1586,
+            frontImageHeight = 1000
+        )
+
+        val crop = plan.front.sourceCropRect
+        assertEquals(0f, crop.left, 1f)
+        assertEquals(0f, crop.top, 1f)
+        assertEquals(1586f, crop.width, 2f)
+        assertEquals(1000f, crop.height, 2f)
+    }
+
+    @Test
     fun frontOnlyPlanHasNoBackSide() {
         val plan = IdCardCombinedPagePlanner.plan(
             pageWidth = pageWidth,
@@ -62,55 +179,6 @@ class IdCardCombinedPagePlannerTest {
             pageHeight = plan.pageHeight.toFloat()
         )
         assertEquals(expected.single(), plan.front.cardRect)
-    }
-
-    @Test
-    fun imagesAreFittedWithoutStretchingAndStayInsideTheirCardSlot() {
-        // A landscape card photo and a portrait (mis-oriented) one: neither may be stretched.
-        val plan = IdCardCombinedPagePlanner.plan(
-            pageWidth = pageWidth,
-            frontImageWidth = 1600,
-            frontImageHeight = 1000,
-            backImageWidth = 1000,
-            backImageHeight = 1600
-        )
-
-        assertAspectPreserved(plan.front.imageRect, 1600, 1000)
-        assertInside(plan.front.imageRect, plan.front.cardRect)
-        val back = plan.back
-        assertNotNull(back)
-        requireNotNull(back)
-        assertAspectPreserved(back.imageRect, 1000, 1600)
-        assertInside(back.imageRect, back.cardRect)
-    }
-
-    @Test
-    fun fittedImagesAreCenteredWithinTheirCardSlot() {
-        val plan = IdCardCombinedPagePlanner.plan(
-            pageWidth = pageWidth,
-            frontImageWidth = 1000,
-            frontImageHeight = 1600
-        )
-
-        val card = plan.front.cardRect
-        val image = plan.front.imageRect
-        assertEquals(card.left + card.width / 2f, image.left + image.width / 2f, 0.01f)
-        assertEquals(card.top + card.height / 2f, image.top + image.height / 2f, 0.01f)
-    }
-
-    @Test
-    fun cardAspectRatioMatchedImageFillsItsSlot() {
-        // An image already at the ID-1 card ratio should occupy the whole slot.
-        val plan = IdCardCombinedPagePlanner.plan(
-            pageWidth = pageWidth,
-            frontImageWidth = 1586,
-            frontImageHeight = 1000
-        )
-
-        val card = plan.front.cardRect
-        val image = plan.front.imageRect
-        assertEquals(card.width, image.width, card.width * 0.01f)
-        assertEquals(card.height, image.height, card.height * 0.01f)
     }
 
     @Test(expected = IllegalArgumentException::class)
@@ -145,15 +213,20 @@ class IdCardCombinedPagePlannerTest {
         )
     }
 
-    private fun assertAspectPreserved(imageRect: CardRect, imageWidth: Int, imageHeight: Int) {
-        val sourceRatio = imageWidth.toFloat() / imageHeight
-        assertEquals(sourceRatio, imageRect.width / imageRect.height, 0.001f)
+    /**
+     * No stretching: because the destination is always the complete card slot, proportions are
+     * preserved exactly when the source crop's aspect ratio equals the slot's aspect ratio.
+     */
+    private fun assertCropMatchesSlotRatio(draw: IdCardCombinedSideDraw) {
+        val slotRatio = draw.cardRect.width / draw.cardRect.height
+        val cropRatio = draw.sourceCropRect.width / draw.sourceCropRect.height
+        assertEquals(slotRatio, cropRatio, 0.001f)
     }
 
-    private fun assertInside(inner: CardRect, outer: CardRect) {
-        assertTrue(inner.left >= outer.left - 0.01f)
-        assertTrue(inner.top >= outer.top - 0.01f)
-        assertTrue(inner.right <= outer.right + 0.01f)
-        assertTrue(inner.bottom <= outer.bottom + 0.01f)
+    private fun assertCropInsideSource(crop: CardRect, imageWidth: Int, imageHeight: Int) {
+        assertTrue(crop.left >= -0.01f)
+        assertTrue(crop.top >= -0.01f)
+        assertTrue(crop.right <= imageWidth + 0.01f)
+        assertTrue(crop.bottom <= imageHeight + 0.01f)
     }
 }
