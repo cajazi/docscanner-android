@@ -73,4 +73,30 @@ class IdCardCaptureFlowTest {
 
         assertEquals(afterBack, skipped)
     }
+
+    @Test
+    fun undoFromBackStageReturnsToFrontAndDiscardsFrontImage() {
+        val afterFront = IdCardCaptureFlow.onSideCaptured(IdCardCaptureState(), "content://scan/front.jpg")
+
+        val undone = IdCardCaptureFlow.undoCapture(afterFront)
+
+        assertEquals(IdCardCaptureStage.FRONT, undone.stage)
+        assertNull(undone.frontImageUri)
+        assertNull(undone.backImageUri)
+    }
+
+    @Test
+    fun undoIsNoOpOnFrontStage() {
+        val initial = IdCardCaptureState()
+
+        assertEquals(initial, IdCardCaptureFlow.undoCapture(initial))
+    }
+
+    @Test
+    fun undoIsNoOpOnceComplete() {
+        val afterFront = IdCardCaptureFlow.onSideCaptured(IdCardCaptureState(), "content://scan/front.jpg")
+        val afterBack = IdCardCaptureFlow.onSideCaptured(afterFront, "content://scan/back.jpg")
+
+        assertEquals(afterBack, IdCardCaptureFlow.undoCapture(afterBack))
+    }
 }

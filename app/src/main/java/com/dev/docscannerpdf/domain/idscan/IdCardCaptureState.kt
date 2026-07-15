@@ -48,4 +48,17 @@ object IdCardCaptureFlow {
         } else {
             state
         }
+
+    /**
+     * The CamScanner-style undo arrow next to the shutter: steps back one capture. From
+     * [IdCardCaptureStage.BACK] it returns to [IdCardCaptureStage.FRONT], discarding the stored
+     * front image so it can be retaken. There is nothing to undo on [IdCardCaptureStage.FRONT],
+     * and [IdCardCaptureStage.COMPLETE] has already left the capture screen — both are no-ops.
+     */
+    fun undoCapture(state: IdCardCaptureState): IdCardCaptureState =
+        if (state.stage == IdCardCaptureStage.BACK) {
+            state.copy(stage = IdCardCaptureStage.FRONT, frontImageUri = null)
+        } else {
+            state
+        }
 }
