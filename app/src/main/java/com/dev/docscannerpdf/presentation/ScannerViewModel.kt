@@ -421,24 +421,37 @@ class ScannerViewModel(
         }
     }
 
+    /**
+     * Persistence and completion are deliberately separated (see [GeneratedDocumentSaver]):
+     * [onError] fires exactly once iff the repository insert itself fails — a throwing
+     * [onSaved] after a SUCCESSFUL insert is logged as a non-fatal instead, never reported as
+     * a save failure, so callers can safely treat [onError] as "nothing was inserted, retry is
+     * safe". [onSaved] stays the final parameter for trailing-lambda call sites.
+     */
     fun saveGeneratedPdfDocument(
         document: DocumentEntity,
+        onError: (String) -> Unit = {},
         onSaved: (DocumentEntity) -> Unit = {}
     ) {
         viewModelScope.launch {
             _uiState.update { it.copy(isSaving = true, errorMessage = null) }
-            try {
-                val documentId = repository.saveDocument(document)
-                val savedDocument = document.copy(id = documentId)
-                _uiState.update { it.copy(isSaving = false) }
-                onSaved(savedDocument)
-            } catch (throwable: Throwable) {
-                _uiState.update {
-                    it.copy(
-                        isSaving = false,
-                        errorMessage = throwable.message ?: "Unable to save generated PDF."
-                    )
+            val outcome = GeneratedDocumentSaver.save(
+                document = document,
+                persist = { repository.saveDocument(it) },
+                onPersistFailed = { message ->
+                    _uiState.update { it.copy(isSaving = false, errorMessage = message) }
+                    onError(message)
+                },
+                onPersisted = { savedDocument ->
+                    _uiState.update { it.copy(isSaving = false) }
+                    onSaved(savedDocument)
                 }
+            )
+            if (outcome is GeneratedDocumentSaver.Outcome.SavedButCallbackFailed) {
+                analyticsRepository.recordNonFatal(
+                    throwable = outcome.callbackFailure,
+                    area = "generated_pdf_saved_callback"
+                )
             }
         }
     }

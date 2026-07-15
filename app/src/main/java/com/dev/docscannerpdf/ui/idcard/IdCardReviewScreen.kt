@@ -17,6 +17,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -52,6 +54,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.dev.docscannerpdf.domain.filter.DocumentFilter
 import com.dev.docscannerpdf.domain.idscan.IdCardReviewSide
 import com.dev.docscannerpdf.domain.idscan.IdCardReviewState
 import com.dev.docscannerpdf.domain.pdf.CardRect
@@ -73,7 +76,9 @@ private val TileCornerRadius = 10.dp
  * title/tip/toolbar chrome. Tapping either image ONLY selects it as the target for
  * Crop/Rotate/Filter — it never rotates or otherwise mutates the image; the user already
  * complained about cards rotating unexpectedly, so rotation happens solely through the explicit
- * Rotate toolbar button. Nothing here touches the normal document scan/result flow.
+ * Rotate toolbar button. The Filter button toggles a picker strip showing the shared
+ * [DocumentFilter.CATALOG]; the tapped filter goes through [onSelectFilter] to the currently
+ * selected side only. Nothing here touches the normal document scan/result flow.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -86,12 +91,13 @@ fun IdCardReviewScreen(
     onCompare: () -> Unit,
     onCrop: () -> Unit,
     onRotate: () -> Unit,
-    onFilter: () -> Unit,
+    onSelectFilter: (DocumentFilter) -> Unit,
     onAddWatermark: () -> Unit,
     onSave: () -> Unit
 ) {
     DarkSystemBarsEffect()
     var showRenameDialog by remember { mutableStateOf(false) }
+    var showFilterPicker by remember { mutableStateOf(false) }
 
     Scaffold(
         modifier = Modifier.safeDrawingPadding(),
@@ -145,13 +151,22 @@ fun IdCardReviewScreen(
             }
         },
         bottomBar = {
-            IdCardReviewToolbar(
-                onCrop = onCrop,
-                onRotate = onRotate,
-                onFilter = onFilter,
-                onAddWatermark = onAddWatermark,
-                onSave = onSave
-            )
+            Column {
+                if (showFilterPicker) {
+                    IdCardFilterPickerStrip(
+                        selectedFilter = state.filter(state.selectedSide),
+                        onSelectFilter = onSelectFilter
+                    )
+                }
+                IdCardReviewToolbar(
+                    onCrop = onCrop,
+                    onRotate = onRotate,
+                    onFilter = { showFilterPicker = !showFilterPicker },
+                    filterActive = showFilterPicker,
+                    onAddWatermark = onAddWatermark,
+                    onSave = onSave
+                )
+            }
         },
         containerColor = ScreenBackground
     ) { innerPadding ->
@@ -180,21 +195,21 @@ fun IdCardReviewScreen(
                             val density = LocalDensity.current
                             val pageWidthPx = with(density) { maxWidth.toPx() }
                             val pageHeightPx = with(density) { maxHeight.toPx() }
-                            val sideCount = if (state.backImageUri != null) 2 else 1
+                            val sideCount = if (state.backBaseImageUri != null) 2 else 1
                             val cardRects = IdCardLayoutPlanner.plan(sideCount, pageWidthPx, pageHeightPx)
 
                             IdCardReviewTile(
-                                imageUri = Uri.parse(state.frontImageUri),
+                                imageUri = Uri.parse(state.frontRenderedImageUri ?: state.frontBaseImageUri),
                                 rotationDegrees = state.frontRotationDegrees,
                                 selected = state.selectedSide == IdCardReviewSide.FRONT,
                                 rect = cardRects[0],
                                 density = density,
                                 onClick = { onSelectSide(IdCardReviewSide.FRONT) }
                             )
-                            val backUri = state.backImageUri
-                            if (backUri != null) {
+                            val backDisplayUri = state.displayImageUri(IdCardReviewSide.BACK)
+                            if (backDisplayUri != null) {
                                 IdCardReviewTile(
-                                    imageUri = Uri.parse(backUri),
+                                    imageUri = Uri.parse(backDisplayUri),
                                     rotationDegrees = state.backRotationDegrees,
                                     selected = state.selectedSide == IdCardReviewSide.BACK,
                                     rect = cardRects[1],
@@ -331,15 +346,64 @@ private fun IdCardReviewTile(
 }
 
 /**
+ * The Filter button's picker: the complete shared [DocumentFilter.CATALOG] in exact catalog
+ * order as a horizontally scrollable chip strip (so all ten entries stay reachable on small
+ * screens), with the selected side's current filter highlighted in the app's accent color.
+ * Tapping a chip applies that filter to the currently selected Front/Back side only.
+ */
+@Composable
+private fun IdCardFilterPickerStrip(
+    selectedFilter: DocumentFilter,
+    onSelectFilter: (DocumentFilter) -> Unit
+) {
+    Surface(color = Color(0xFF1A1B1F)) {
+        LazyRow(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 8.dp),
+            contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 10.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            items(DocumentFilter.CATALOG) { filter ->
+                val selected = filter == selectedFilter
+                Surface(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(6.dp))
+                        .clickable { onSelectFilter(filter) },
+                    shape = RoundedCornerShape(6.dp),
+                    color = if (selected) SaveAccent else DarkChip,
+                    border = if (selected) {
+                        androidx.compose.foundation.BorderStroke(1.dp, Color.White)
+                    } else {
+                        null
+                    }
+                ) {
+                    Text(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                        text = filter.displayName,
+                        color = Color.White,
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                        maxLines = 1
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
  * Bottom action row: Crop / Rotate / Filter / Watermark, plus the accent-colored Save check.
  * Rotate is deliberately an explicit button here — the only way to rotate a side — because
- * rotating on image tap made cards turn when the user just meant to select one.
+ * rotating on image tap made cards turn when the user just meant to select one. Filter toggles
+ * the picker strip and tints while it is open.
  */
 @Composable
 private fun IdCardReviewToolbar(
     onCrop: () -> Unit,
     onRotate: () -> Unit,
     onFilter: () -> Unit,
+    filterActive: Boolean,
     onAddWatermark: () -> Unit,
     onSave: () -> Unit
 ) {
@@ -353,7 +417,12 @@ private fun IdCardReviewToolbar(
         ) {
             IdCardReviewToolbarButton(label = "Crop", icon = Icons.Default.Crop, onClick = onCrop)
             IdCardReviewToolbarButton(label = "Rotate", icon = Icons.AutoMirrored.Filled.RotateRight, onClick = onRotate)
-            IdCardReviewToolbarButton(label = "Filter", icon = Icons.Default.FilterVintage, onClick = onFilter)
+            IdCardReviewToolbarButton(
+                label = "Filter",
+                icon = Icons.Default.FilterVintage,
+                tint = if (filterActive) SaveAccent else Color.White,
+                onClick = onFilter
+            )
             IdCardReviewToolbarButton(label = "Watermark", icon = Icons.Default.WaterDrop, onClick = onAddWatermark)
             Surface(
                 modifier = Modifier

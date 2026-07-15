@@ -105,10 +105,14 @@ import com.dev.docscannerpdf.domain.crop.CropReducer
 import com.dev.docscannerpdf.domain.crop.CropState
 import com.dev.docscannerpdf.domain.crop.PerspectiveQuad
 import com.dev.docscannerpdf.domain.detection.LiveFrameAnalyzer
+import com.dev.docscannerpdf.domain.filter.DocumentFilter
+import com.dev.docscannerpdf.domain.filter.DocumentFilterRenderer
 import com.dev.docscannerpdf.domain.idscan.IdCardCombinedPageRenderer
 import com.dev.docscannerpdf.domain.idscan.IdCardReviewFlow
 import com.dev.docscannerpdf.domain.idscan.IdCardReviewSide
 import com.dev.docscannerpdf.domain.idscan.IdCardReviewState
+import com.dev.docscannerpdf.domain.idscan.IdCardSaveCoordinator
+import com.dev.docscannerpdf.domain.idscan.IdCardSideSavePlan
 import com.dev.docscannerpdf.domain.idscan.IdScanPostProcessor
 import com.dev.docscannerpdf.ui.crop.CropImageProcessor
 import com.dev.docscannerpdf.ui.detection.LumaFrameFactory
@@ -172,11 +176,15 @@ import java.io.FileOutputStream
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
+import kotlin.coroutines.resume
 
 class MainActivity : FragmentActivity() {
 
@@ -1254,55 +1262,122 @@ class MainActivity : FragmentActivity() {
     /**
      * Called once the guided ID-card capture screen has a front image (and, optionally, a back
      * image). Instead of jumping straight to the generic Document Ready preview, this opens the
-     * CamScanner-style [IdCardReviewState] step (crop/rotate/enhance/save) and kicks off the same
-     * best-effort local enhancement in the background — which now also corrects EXIF orientation,
-     * so the review screen shows each side exactly as captured rather than sideways.
+     * CamScanner-style [IdCardReviewState] step (crop/rotate/filter/save). The capture-baked
+     * files (already EXIF-corrected and guide-frame-cropped by [IdCardCaptureBaker]) become each
+     * side's retained BASE image, the default [DocumentFilter.ENHANCE] is selected for both
+     * sides, and its output is rendered non-destructively from the base — reproducing the old
+     * enhanced first appearance without ever overwriting the unfiltered file.
      */
     internal fun beginIdCardReview(frontUri: Uri, backUri: Uri?) {
         showIdCardGuidedCapture = false
         val title = "$pendingIdCardCaptureTitlePrefix " +
             SimpleDateFormat("dd-MM-yyyy HH.mm", Locale.getDefault()).format(Date())
         idCardReview = IdCardReviewState(
-            frontImageUri = frontUri.toString(),
-            backImageUri = backUri?.toString(),
+            frontBaseImageUri = frontUri.toString(),
+            backBaseImageUri = backUri?.toString(),
             title = title
         )
-        enhanceIdCardReviewImage(rawUri = frontUri, side = IdCardReviewSide.FRONT)
+        renderIdCardReviewFilter(IdCardReviewSide.FRONT)
         if (backUri != null) {
-            enhanceIdCardReviewImage(rawUri = backUri, side = IdCardReviewSide.BACK)
+            renderIdCardReviewFilter(IdCardReviewSide.BACK)
         }
     }
 
+    // Per-side asynchronous filter-render protection: a monotonically increasing generation
+    // token plus the render Job itself, independently for front and back so rapid filter
+    // changes on one side can never cancel or corrupt the other side's render. A render may
+    // publish only if its captured generation still matches AND the pure reducer
+    // ([IdCardReviewFlow.withRenderedFilter]) confirms the side still wants exactly that
+    // (base, filter) pair — an older render can never overwrite a newer selection.
+    private var frontFilterGeneration = 0L
+    private var backFilterGeneration = 0L
+    private var frontFilterJob: Job? = null
+    private var backFilterJob: Job? = null
+
     /**
-     * Best-effort local enhancement (contrast/sharpen + EXIF orientation correction, see
-     * [IdScanPostProcessor]) of one review side's image. Swaps the corrected image into
-     * [idCardReview] once ready only if that side still shows the same raw image it started
-     * from — if the user already cropped/rotated/re-enhanced it in the meantime, this stale
-     * result is dropped instead of clobbering their edit.
+     * The review screen's filter picker action: applies [filter] to the currently selected side
+     * only (via the pure reducer, which preserves crop, rotation, the other side, and the
+     * title), then kicks off its non-destructive render from that side's retained base image.
      */
-    private fun enhanceIdCardReviewImage(rawUri: Uri, side: IdCardReviewSide) {
-        lifecycleScope.launch {
-            val enhancedUri = runCatching {
-                IdScanPostProcessor.processUri(
+    internal fun applyIdCardReviewFilter(filter: DocumentFilter) {
+        val current = idCardReview ?: return
+        val side = current.selectedSide
+        val updated = IdCardReviewFlow.applyFilter(current, filter)
+        if (updated === current) return
+        idCardReview = updated
+        renderIdCardReviewFilter(side)
+    }
+
+    /**
+     * Renders [side]'s currently selected filter from its base image into a NEW app-private
+     * file, cancelling any previous render for that side and bumping that side's generation.
+     * ORIGINAL never renders — the cleared rendered URI already makes the tile display the base.
+     * A failed render keeps the user's filter selection (display falls back to the base) and
+     * reports through the existing error channel so they can retry or pick Original.
+     */
+    private fun renderIdCardReviewFilter(side: IdCardReviewSide) {
+        val state = idCardReview ?: return
+        val baseUri = state.baseImageUri(side) ?: return
+        val filter = state.filter(side)
+        val generation = when (side) {
+            IdCardReviewSide.FRONT -> ++frontFilterGeneration
+            IdCardReviewSide.BACK -> ++backFilterGeneration
+        }
+        when (side) {
+            IdCardReviewSide.FRONT -> frontFilterJob?.cancel()
+            IdCardReviewSide.BACK -> backFilterJob?.cancel()
+        }
+        if (filter == DocumentFilter.ORIGINAL) return
+
+        val job = lifecycleScope.launch {
+            // CancellationException must propagate: a stale render cancelled by a newer filter
+            // choice (or by leaving the screen) is intentional and must not be reported as a
+            // filter failure. Only genuine decode/render/write problems become null here.
+            val rendered = try {
+                DocumentFilterRenderer.render(
                     context = this@MainActivity,
-                    sourceUri = rawUri,
-                    outputDirectory = File(
-                        filesDir,
-                        if (side == IdCardReviewSide.BACK) "id_scan_preview_back" else "id_scan_preview"
-                    )
+                    sourceUri = Uri.parse(baseUri),
+                    filter = filter,
+                    outputDirectory = File(filesDir, "id_card_filtered")
                 )
-            }.getOrNull()
-            if (enhancedUri == null) {
-                Log.w(TAG, "Unable to enhance ID card review image.")
+            } catch (cancellation: CancellationException) {
+                throw cancellation
+            } catch (throwable: Throwable) {
+                Log.w(TAG, "ID card filter render threw: ${throwable.message}")
+                null
+            }
+            val currentGeneration = when (side) {
+                IdCardReviewSide.FRONT -> frontFilterGeneration
+                IdCardReviewSide.BACK -> backFilterGeneration
+            }
+            if (currentGeneration != generation) return@launch
+            val current = idCardReview ?: return@launch
+            if (rendered == null) {
+                Log.w(TAG, "Unable to render ID card filter ${filter.name}.")
+                if (current.filter(side) == filter && current.baseImageUri(side) == baseUri) {
+                    viewModel.showError("Unable to apply ${filter.displayName}. Try again or choose Original.")
+                }
                 return@launch
             }
-            val current = idCardReview ?: return@launch
-            val rawUriString = rawUri.toString()
-            val stillRaw = current.imageUri(side) == rawUriString
-            if (stillRaw) {
-                idCardReview = IdCardReviewFlow.withUpdatedImage(current, side, enhancedUri.toString())
-            }
+            idCardReview = IdCardReviewFlow.withRenderedFilter(
+                state = current,
+                side = side,
+                filter = filter,
+                baseImageUri = baseUri,
+                renderedImageUri = rendered.toString()
+            )
         }
+        when (side) {
+            IdCardReviewSide.FRONT -> frontFilterJob = job
+            IdCardReviewSide.BACK -> backFilterJob = job
+        }
+    }
+
+    private fun cancelIdCardFilterJobs() {
+        frontFilterJob?.cancel()
+        backFilterJob?.cancel()
+        frontFilterJob = null
+        backFilterJob = null
     }
 
     /**
@@ -1320,14 +1395,6 @@ class MainActivity : FragmentActivity() {
     internal fun rotateSelectedIdCardReviewSide() {
         val current = idCardReview ?: return
         idCardReview = IdCardReviewFlow.rotateSelected(current)
-    }
-
-    /** Manually re-runs the enhancement pass on the currently selected review side's image. */
-    internal fun enhanceSelectedIdCardReviewSide() {
-        val current = idCardReview ?: return
-        val side = current.selectedSide
-        val uri = current.imageUri(side)?.let(Uri::parse) ?: return
-        enhanceIdCardReviewImage(rawUri = uri, side = side)
     }
 
     /** Applies a user-edited title from the review screen's rename (pencil) dialog. */
@@ -1352,56 +1419,152 @@ class MainActivity : FragmentActivity() {
 
     /** Cancels the ID-card review step entirely, discarding both captured sides. */
     internal fun cancelIdCardReview() {
+        cancelIdCardFilterJobs()
         idCardReview = null
     }
 
     /**
-     * Finalizes the ID-card review (the review screen's Save/check action): bakes any
-     * user-requested rotation into the actual pixels — neither the Document Ready preview nor
-     * the exported PDF apply a rotation transform of their own, so the saved file must already be
-     * correctly oriented — then hands off to the existing Document Ready pipeline exactly like a
-     * completed ID-card scan always has.
+     * The green-check state machine (see [IdCardSaveCoordinator]): image production and
+     * persistence are injected so its guarantees — single-flight guard, abort-before-persist,
+     * review restored only when nothing was inserted, persisted-but-navigation-failed never
+     * retryable — are unit tested without this activity.
+     */
+    private val idCardSaveCoordinator = IdCardSaveCoordinator(
+        produceSideImage = { side -> produceFinalIdCardSideImage(side)?.toString() },
+        renderCombinedPage = { front, back ->
+            renderIdCardCombinedImage(Uri.parse(front), back?.let(Uri::parse))?.toString()
+        },
+        persistDocument = { title, pageCount, combinedImageUri ->
+            persistIdCardDocument(title, pageCount, combinedImageUri)
+        }
+    )
+
+    /**
+     * Finalizes the ID-card review (the green check): produces each side's FINAL image
+     * (selected filter rendered from the retained base, then the side's rotation baked into the
+     * pixels), renders the equal-size combined front/back page, and saves ONE document through
+     * the existing repository so it appears immediately in All Documents via the existing Room
+     * Flow. Navigation to the Document Ready preview happens only after the repository insert
+     * succeeds. A pre-persistence failure restores the review for retry; a completion failure
+     * AFTER a successful insert is only logged — the document exists, so re-offering the review
+     * would create a duplicate. Save to Gallery stays a separate user-triggered action.
      */
     internal fun confirmIdCardReview() {
+        if (idCardSaveCoordinator.isSaving) return
         val review = idCardReview ?: return
-        val title = review.title
+        // Synchronous removal of the actionable review state (plus the coordinator's own guard)
+        // makes a repeated green-check tap a no-op with exactly one insertion reachable.
         idCardReview = null
+        cancelIdCardFilterJobs()
         lifecycleScope.launch {
-            val frontUri = bakeIdCardRotation(Uri.parse(review.frontImageUri), review.frontRotationDegrees)
-            val backUri = review.backImageUri?.let {
-                bakeIdCardRotation(Uri.parse(it), review.backRotationDegrees)
+            when (val outcome = idCardSaveCoordinator.confirm(review, ::showIdCardSavedPreview)) {
+                is IdCardSaveCoordinator.Outcome.AlreadySaving -> Unit
+                is IdCardSaveCoordinator.Outcome.Invalid -> {
+                    idCardReview = review
+                    viewModel.showError(outcome.reason)
+                }
+                is IdCardSaveCoordinator.Outcome.Aborted -> {
+                    // Nothing was inserted — reopen the exact captured review for retry.
+                    idCardReview = outcome.review
+                    viewModel.showError(outcome.message)
+                }
+                is IdCardSaveCoordinator.Outcome.Completed -> Unit
+                is IdCardSaveCoordinator.Outcome.CompletedWithCallbackFailure -> {
+                    Log.w(TAG, "ID card saved, but showing the result preview failed.", outcome.failure)
+                }
             }
-            // Both sides are final at this point (enhanced, cropped, rotation baked), so the
-            // combined front+back result page can be rendered up front — the Document Ready
-            // preview then shows exactly the image "Save to gallery" will write.
-            val combinedUri = renderIdCardCombinedImage(frontUri, backUri)
-
-            imageImportReview = null
-            pendingImageImport = null
-            imageEditorMessage = null
-            scannerBackendProcessingState = ScannerBackendProcessingState.Idle
-            scannerFlowValidationState = ScannerFlowValidationState()
-            documentResultState = null
-            importedImagePreview = PendingImageImport(
-                imageUri = frontUri,
-                title = title,
-                backImageUri = backUri,
-                isIdCardScan = true,
-                combinedImageUri = combinedUri
-            )
         }
     }
 
-    private suspend fun bakeIdCardRotation(uri: Uri, degrees: Int): Uri {
-        if (degrees == 0) return uri
-        return runCatching {
+    /** One repository insertion attempt for the completed ID card, adapted to [IdCardSaveCoordinator.PersistResult]. */
+    private suspend fun persistIdCardDocument(
+        title: String,
+        pageCount: Int,
+        combinedImageUri: String
+    ): IdCardSaveCoordinator.PersistResult = suspendCancellableCoroutine { continuation ->
+        viewModel.saveGeneratedPdfDocument(
+            document = DocumentEntity(
+                title = title,
+                timestamp = System.currentTimeMillis(),
+                pageCount = pageCount,
+                localPdfUri = combinedImageUri
+            ),
+            onError = { message ->
+                if (continuation.isActive) {
+                    continuation.resume(IdCardSaveCoordinator.PersistResult.Failure(message))
+                }
+            },
+            onSaved = {
+                if (continuation.isActive) {
+                    continuation.resume(IdCardSaveCoordinator.PersistResult.Success)
+                }
+            }
+        )
+    }
+
+    /**
+     * Post-persistence completion: swaps in the Document Ready preview for the saved ID card.
+     * The per-side FINAL (filtered + rotation-baked) uris ride along so the ID-card PDF export
+     * lays out exactly the images the combined page shows.
+     */
+    private fun showIdCardSavedPreview(result: IdCardSaveCoordinator.SaveResult) {
+        imageImportReview = null
+        pendingImageImport = null
+        imageEditorMessage = null
+        scannerBackendProcessingState = ScannerBackendProcessingState.Idle
+        scannerFlowValidationState = ScannerFlowValidationState()
+        documentResultState = null
+        importedImagePreview = PendingImageImport(
+            imageUri = Uri.parse(result.frontImageUri),
+            title = result.title,
+            backImageUri = result.backImageUri?.let(Uri::parse),
+            isIdCardScan = true,
+            combinedImageUri = Uri.parse(result.combinedImageUri)
+        )
+    }
+
+    /**
+     * Produces one side's final saved image per the authoritative pipeline: the selected filter
+     * rendered from the retained base (reusing the already-published render when present —
+     * never silently substituting the unfiltered base for a non-Original filter), then the
+     * side's rotation baked into the pixels. Returns null to ABORT the save when the filter
+     * render fails or a non-zero rotation cannot be baked — a silently unfiltered or unrotated
+     * document must never be saved. Cancellation always propagates.
+     */
+    private suspend fun produceFinalIdCardSideImage(side: IdCardSideSavePlan): Uri? {
+        val filtered: Uri = if (side.filter == DocumentFilter.ORIGINAL) {
+            Uri.parse(side.baseImageUri)
+        } else {
+            side.renderedImageUri?.let(Uri::parse)
+                ?: try {
+                    DocumentFilterRenderer.render(
+                        context = this@MainActivity,
+                        sourceUri = Uri.parse(side.baseImageUri),
+                        filter = side.filter,
+                        outputDirectory = File(filesDir, "id_card_filtered")
+                    )
+                } catch (cancellation: CancellationException) {
+                    throw cancellation
+                } catch (throwable: Throwable) {
+                    Log.w(TAG, "Unable to render ${side.filter.name} for save: ${throwable.message}")
+                    null
+                }
+                ?: return null
+        }
+        if (!side.requiresRotationBake) return filtered
+        return try {
             IdScanPostProcessor.rotateAndSave(
                 context = this@MainActivity,
-                sourceUri = uri,
-                degrees = degrees,
+                sourceUri = filtered,
+                degrees = side.rotationDegrees,
                 outputDirectory = File(filesDir, "id_scan_rotated")
             )
-        }.getOrNull() ?: uri
+        } catch (cancellation: CancellationException) {
+            throw cancellation
+        } catch (throwable: Throwable) {
+            Log.w(TAG, "Unable to bake ID card rotation: ${throwable.message}")
+            null
+        }
     }
 
     /**
@@ -1448,11 +1611,16 @@ class MainActivity : FragmentActivity() {
         }
     }
 
-    /** Opens the shared crop editor targeting the ID-card review's currently selected side. */
+    /**
+     * Opens the shared crop editor targeting the ID-card review's currently selected side.
+     * Cropping always works on the side's BASE image (capture-baked, unfiltered) — per the
+     * authoritative pipeline the crop feeds the base, and the selected filter re-renders from
+     * the cropped result.
+     */
     internal fun openIdCardCropEditor() {
         val review = idCardReview ?: return
         val side = review.selectedSide
-        val source = review.imageUri(side)
+        val source = review.baseImageUri(side)
         if (source.isNullOrBlank()) {
             viewModel.showError("No image is available to crop.")
             return
@@ -1490,7 +1658,12 @@ class MainActivity : FragmentActivity() {
         idCardCropState = idCardCropState?.let { CropReducer.resetQuad(it) }
     }
 
-    /** Applies the ID-card crop: warps to a new local file and swaps it into the review's target side. */
+    /**
+     * Applies the ID-card crop: warps the BASE to a new local file, installs it as the target
+     * side's new base (keeping that side's selected filter and rotation, clearing its now-stale
+     * rendered output), and re-renders the selected filter from the new base. A failed warp
+     * keeps the previous base and rendered result and leaves the crop editor recoverable.
+     */
     internal fun idCardCropApply() {
         val current = idCardCropState ?: return
         val bitmap = idCardCropSourceBitmap
@@ -1512,7 +1685,10 @@ class MainActivity : FragmentActivity() {
                 viewModel.showError("Unable to apply crop.")
                 return@launch
             }
-            idCardReview = idCardReview?.let { IdCardReviewFlow.withUpdatedImage(it, side, croppedUri.toString()) }
+            idCardReview = idCardReview?.let {
+                IdCardReviewFlow.withCroppedBase(it, side, croppedUri.toString())
+            }
+            renderIdCardReviewFilter(side)
             cancelIdCardCropEditor()
             viewModel.showError("Crop applied.")
         }
