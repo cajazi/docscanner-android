@@ -82,4 +82,55 @@ class IdCardReviewFlowTest {
         assertEquals(90, state.rotationDegrees(IdCardReviewSide.FRONT))
         assertEquals(0, state.rotationDegrees(IdCardReviewSide.BACK))
     }
+
+    @Test
+    fun renameTitleReplacesTitleAndPreservesFrontAndBackImages() {
+        val state = frontAndBack()
+
+        val renamed = IdCardReviewFlow.renameTitle(state, "My Bank Card")
+
+        assertEquals("My Bank Card", renamed.title)
+        assertEquals("content://scan/front.jpg", renamed.frontImageUri)
+        assertEquals("content://scan/back.jpg", renamed.backImageUri)
+    }
+
+    @Test
+    fun renameTitleTrimsWhitespace() {
+        val renamed = IdCardReviewFlow.renameTitle(frontOnly(), "  Spaced Title  ")
+
+        assertEquals("Spaced Title", renamed.title)
+    }
+
+    @Test
+    fun renameTitleIsNoOpWhenBlank() {
+        val state = frontAndBack()
+
+        val renamed = IdCardReviewFlow.renameTitle(state, "   ")
+
+        assertEquals(state.title, renamed.title)
+    }
+
+    @Test
+    fun defaultTitleIsIdCard() {
+        assertEquals("ID Card", frontOnly().title)
+    }
+
+    @Test
+    fun saveReadyStatePreservesFrontAndBackImagesThroughSelectRotateAndRename() {
+        // Mirrors what the review screen's Save/check action reads (frontImageUri/backImageUri)
+        // after a normal editing session: selecting, tapping to rotate, and renaming must never
+        // touch either side's captured image.
+        var state = frontAndBack()
+        state = IdCardReviewFlow.selectSide(state, IdCardReviewSide.BACK)
+        state = IdCardReviewFlow.rotateSelected(state)
+        state = IdCardReviewFlow.selectSide(state, IdCardReviewSide.FRONT)
+        state = IdCardReviewFlow.rotateSelected(state)
+        state = IdCardReviewFlow.renameTitle(state, "Renamed Card")
+
+        assertEquals("content://scan/front.jpg", state.frontImageUri)
+        assertEquals("content://scan/back.jpg", state.backImageUri)
+        assertEquals(90, state.frontRotationDegrees)
+        assertEquals(90, state.backRotationDegrees)
+        assertEquals("Renamed Card", state.title)
+    }
 }

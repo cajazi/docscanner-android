@@ -494,6 +494,11 @@ fun ImportedImageDocumentPreview(
     // True for an ID-card scan (front-only or front+back). Normal document previews leave this
     // false and keep the existing full-page layout unchanged.
     isIdCardScan: Boolean = false,
+    // The pre-rendered combined ID-card result page (front + back on one white page) — the same
+    // image "Save to gallery" writes. When present it is shown directly so preview and saved
+    // output are pixel-identical; null (still rendering, or non-ID-card) falls back to the
+    // composed tile layout.
+    combinedImageUri: Uri? = null,
     backendProcessingState: ScannerBackendProcessingState = ScannerBackendProcessingState.Idle,
     validationState: ScannerFlowValidationState = ScannerFlowValidationState(),
     onProcessWithBackend: () -> Unit = {},
@@ -676,11 +681,30 @@ fun ImportedImageDocumentPreview(
                             }
                         }
                     }
+                } else if (combinedImageUri != null) {
+                    // ID-card scan with the combined result page already rendered: show that
+                    // exact image (front + back on one white page). It shares the page's A4
+                    // aspect ratio, so ContentScale.Fit fills the page surface edge-to-edge with
+                    // no stretching or clipping — and what's on screen is pixel-identical to
+                    // what "Save to gallery" writes.
+                    Surface(
+                        modifier = pageModifier,
+                        shape = RoundedCornerShape(0.dp),
+                        color = Color.White
+                    ) {
+                        ImportedImageBitmap(
+                            uri = combinedImageUri,
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .graphicsLayer { rotationZ = rotationDegrees },
+                            contentScale = ContentScale.Fit
+                        )
+                    }
                 } else {
-                    // ID-card scan: front (and back, when captured) laid out as same-size,
-                    // ID-card-shaped tiles centered on one A4-style white page, matching
-                    // CamScanner's card layout rather than stretching each side into a
-                    // document-page-sized half.
+                    // ID-card scan whose combined page hasn't rendered yet: front (and back,
+                    // when captured) laid out as same-size, ID-card-shaped tiles centered on one
+                    // A4-style white page, matching CamScanner's card layout rather than
+                    // stretching each side into a document-page-sized half.
                     IdCardStackPreview(
                         frontImageUri = imageUri,
                         backImageUri = backImageUri,

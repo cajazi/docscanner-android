@@ -23,13 +23,13 @@ object IdCardLayoutPlanner {
     const val CARD_ASPECT_RATIO = 1.586f
 
     /** A card never grows wider than this fraction of the page, even with only one side. */
-    private const val MAX_CARD_WIDTH_FRACTION = 0.78f
+    private const val MAX_CARD_WIDTH_FRACTION = 0.6f
 
     /** The whole card stack (1 or 2 cards + gap) never taller than this fraction of the page. */
-    private const val MAX_GROUP_HEIGHT_FRACTION = 0.62f
+    private const val MAX_GROUP_HEIGHT_FRACTION = 0.5f
 
     /** Vertical gap between front and back, as a fraction of the page height. */
-    private const val GAP_FRACTION = 0.035f
+    private const val GAP_FRACTION = 0.06f
 
     /**
      * Builds [sideCount] (1 or 2) same-size [CardRect]s sized to [CARD_ASPECT_RATIO], stacked
