@@ -33,6 +33,8 @@ class IdCardSavePlannerTest {
             frontFilter = DocumentFilter.BW,
             backFilter = DocumentFilter.ORIGINAL,
             frontRenderedImageUri = "file://rendered/front-bw.jpg",
+            frontRenderedFilter = DocumentFilter.BW,
+            frontRenderPending = false,
             frontRotationDegrees = 90,
             backRotationDegrees = 0
         )
@@ -90,6 +92,25 @@ class IdCardSavePlannerTest {
         assertFalse(side.requiresRotationBake)
         assertTrue(side.copy(rotationDegrees = 90).requiresRotationBake)
         assertTrue(side.copy(rotationDegrees = 270).requiresRotationBake)
+    }
+
+    @Test
+    fun staleRenderFromADifferentFilterIsNeverReusedAtSave() {
+        // The user switched to BW while the old ENHANCE render was still on display: the save
+        // must re-render BW from the base, never persist the ENHANCE pixels as "BW".
+        val state = IdCardReviewState(
+            frontBaseImageUri = "file://base/front.jpg",
+            frontFilter = DocumentFilter.BW,
+            frontRenderedImageUri = "file://rendered/front-enhance.jpg",
+            frontRenderedFilter = DocumentFilter.ENHANCE,
+            frontRenderPending = true
+        )
+
+        val plan = IdCardSavePlanner.plan(state) as IdCardSavePlan.Ready
+
+        assertNull(plan.front.renderedImageUri)
+        assertTrue(plan.front.requiresFilterRender)
+        assertEquals(DocumentFilter.BW, plan.front.filter)
     }
 
     @Test

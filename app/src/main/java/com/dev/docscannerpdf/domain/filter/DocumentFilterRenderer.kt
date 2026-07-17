@@ -53,6 +53,28 @@ object DocumentFilterPrimitives {
         applyColorMatrix(source, contrastColorMatrix(amount))
 
     /**
+     * Per-channel tone curve via a pure 256-entry [lut] (e.g. [enhanceToneLut]'s shouldered
+     * lift, which brightens shadows/midtones while tapering to identity at white so highlight
+     * detail survives). Alpha is untouched.
+     */
+    fun applyToneLut(source: Bitmap, lut: IntArray): Bitmap {
+        require(lut.size == 256) { "A tone LUT must have exactly 256 entries." }
+        val pixels = IntArray(source.width * source.height)
+        source.getPixels(pixels, 0, source.width, 0, 0, source.width, source.height)
+        for (index in pixels.indices) {
+            val pixel = pixels[index]
+            val a = pixel ushr 24 and 0xFF
+            val r = lut[pixel ushr 16 and 0xFF]
+            val g = lut[pixel ushr 8 and 0xFF]
+            val b = lut[pixel and 0xFF]
+            pixels[index] = (a shl 24) or (r shl 16) or (g shl 8) or b
+        }
+        val output = Bitmap.createBitmap(source.width, source.height, Bitmap.Config.ARGB_8888)
+        output.setPixels(pixels, 0, source.width, 0, 0, source.width, source.height)
+        return output
+    }
+
+    /**
      * Lightweight unsharp-mask-style 3x3 convolution over bulk pixel arrays (no per-pixel
      * getPixel/setPixel calls, no native/RenderScript dependency) — cheap and deterministic
      * enough to run inline on a single scan's image, and bounded to 0..255 per channel so a mild
@@ -146,6 +168,12 @@ object DocumentFilterRenderer {
         val source = decode(context, sourceUri) ?: return@withContext null
         var current = source
         try {
+            filter.toneLut?.let { lut ->
+                ensureActive()
+                val next = DocumentFilterPrimitives.applyToneLut(current, lut)
+                if (next !== current && current !== source) current.recycle()
+                current = next
+            }
             filter.colorMatrix?.let { matrix ->
                 ensureActive()
                 val next = DocumentFilterPrimitives.applyColorMatrix(current, matrix)

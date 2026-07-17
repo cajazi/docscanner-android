@@ -1275,6 +1275,7 @@ class MainActivity : FragmentActivity() {
         idCardReview = IdCardReviewState(
             frontBaseImageUri = frontUri.toString(),
             backBaseImageUri = backUri?.toString(),
+            backRenderPending = backUri != null,
             title = title
         )
         renderIdCardReviewFilter(IdCardReviewSide.FRONT)
@@ -1355,7 +1356,11 @@ class MainActivity : FragmentActivity() {
             if (rendered == null) {
                 Log.w(TAG, "Unable to render ID card filter ${filter.name}.")
                 if (current.filter(side) == filter && current.baseImageUri(side) == baseUri) {
-                    viewModel.showError("Unable to apply ${filter.displayName}. Try again or choose Original.")
+                    // Truthful recovery: revert the selection to whatever is actually on
+                    // screen (the last rendered filter, or Original/base) and surface the
+                    // failure — the user can re-tap the failed filter to retry.
+                    idCardReview = IdCardReviewFlow.withRenderFailed(current, side, filter, baseUri)
+                    viewModel.showError("Unable to apply ${filter.displayName}. Tap it again to retry.")
                 }
                 return@launch
             }
