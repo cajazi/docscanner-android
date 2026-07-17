@@ -3,6 +3,8 @@ package com.dev.docscannerpdf.ui.idcard
 import android.Manifest
 import android.content.pm.PackageManager
 import android.net.Uri
+import android.util.Log
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.core.ImageCapture
@@ -53,6 +55,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -79,6 +82,11 @@ import androidx.core.content.ContextCompat
 import com.dev.docscannerpdf.domain.idscan.IdCardCaptureBaker
 import com.dev.docscannerpdf.domain.idscan.IdCardCaptureContainerSize
 import com.dev.docscannerpdf.domain.idscan.IdCardCaptureFlow
+import com.dev.docscannerpdf.BuildConfig
+import com.dev.docscannerpdf.domain.idscan.IdCardCaptureShutterGate
+import com.dev.docscannerpdf.domain.idscan.UhdSupportState
+import com.dev.docscannerpdf.domain.idscan.captureClickRejection
+import com.dev.docscannerpdf.domain.idscan.IdCardRawCaptureInspector
 import com.dev.docscannerpdf.domain.idscan.IdCardCaptureStage
 import com.dev.docscannerpdf.domain.idscan.IdCardCaptureState
 import com.dev.docscannerpdf.domain.idscan.IdCardGuideFrameRect
@@ -87,6 +95,16 @@ import kotlinx.coroutines.launch
 import java.io.File
 
 private val GreenAccent = Color(0xFF16C89A)
+
+// Debug-only, content-free capture diagnostics (Play-safe: nothing device- or user-identifying,
+// stripped from release behavior by the BuildConfig gate).
+private fun logCaptureClick(message: String) {
+    if (BuildConfig.DEBUG) Log.d("IdCardCapture", "ID_CARD_CAPTURE_CLICK $message")
+}
+
+private fun logCaptureFlow(message: String) {
+    if (BuildConfig.DEBUG) Log.d("IdCardCapture", "ID_CARD_CAPTURE_FLOW $message")
+}
 
 /**
  * CamScanner-style guided ID-card capture: a dark full-screen camera preview behind black top/
@@ -109,6 +127,18 @@ fun IdCardGuidedCaptureScreen(
     val lifecycleOwner = LocalLifecycleOwner.current
     val scope = rememberCoroutineScope()
 
+    // One stable identity per screen session (survives recomposition AND state restoration):
+    // the mounted/disposed pair proves whether Compose replaced this screen's node — the only
+    // mechanism that can reconstruct the camera controller now that every owned object below
+    // uses keyless remember at the screen's top level.
+    val screenSessionId = rememberSaveable { java.lang.Long.toHexString(System.nanoTime()) }
+    DisposableEffect(Unit) {
+        if (BuildConfig.DEBUG) Log.d("IdCardCapture", "ID_CARD_CAPTURE_SCREEN mounted=$screenSessionId")
+        onDispose {
+            if (BuildConfig.DEBUG) Log.d("IdCardCapture", "ID_CARD_CAPTURE_SCREEN disposed=$screenSessionId")
+        }
+    }
+
     DarkSystemBarsEffect()
 
     var captureState by remember { mutableStateOf(IdCardCaptureState()) }
@@ -118,10 +148,46 @@ fun IdCardGuidedCaptureScreen(
     var containerBounds by remember { mutableStateOf<Rect?>(null) }
     var frameBounds by remember { mutableStateOf<Rect?>(null) }
 
+    // Shutter sound, owned by this capture layer: created once, released when the screen leaves
+    // composition. The gate (pure, unit-tested) plays it exactly once per SUBMITTED camera
+    // capture — the controller confirms its ImageCapture use case exists and fires the
+    // submission callback immediately before the real takePicture. Rejected duplicate taps,
+    // unbound-camera taps, imports, and every review-screen action stay silent.
+    val shutterSound = remember { MediaActionShutterSoundPlayer() }
+    val captureShutterGate = remember { IdCardCaptureShutterGate(shutterSound) }
+    DisposableEffect(Unit) {
+        onDispose { shutterSound.release() }
+    }
+
+    // Controller ownership lives at the SCREEN's top level — outside every conditional branch
+    // — so neither permission flips nor support-state recomposition can ever reconstruct it:
+    // exactly one controller (and one bind) per screen visit, released once on disposal. The
+    // support-state callback writes into a stable MutableState object, so publishing SUPPORTED
+    // recomposes the controls without touching controller identity, and the state survives
+    // recomposition (no reset to CHECKING).
+    var uhdSupportState by remember { mutableStateOf(UhdSupportState.CHECKING) }
+    val controller = remember {
+        IdCardCameraController(context = context, lifecycleOwner = lifecycleOwner).also { created ->
+            created.onSupportStateChanged = { state -> uhdSupportState = state }
+        }
+    }
+    LaunchedEffect(flashOn) {
+        controller.setFlashMode(if (flashOn) ImageCapture.FLASH_MODE_ON else ImageCapture.FLASH_MODE_OFF)
+    }
+    DisposableEffect(Unit) {
+        onDispose { controller.unbind() }
+    }
+
     LaunchedEffect(captureState.stage) {
-        if (captureState.stage == IdCardCaptureStage.COMPLETE) {
-            val front = captureState.frontImageUri?.let(Uri::parse) ?: return@LaunchedEffect
-            onCaptureComplete(front, captureState.backImageUri?.let(Uri::parse))
+        logCaptureFlow("stage_changed stage=${captureState.stage}")
+        when (captureState.stage) {
+            IdCardCaptureStage.BACK -> logCaptureFlow("back_ui_ready")
+            IdCardCaptureStage.COMPLETE -> {
+                val front = captureState.frontImageUri?.let(Uri::parse) ?: return@LaunchedEffect
+                logCaptureFlow("review_navigation")
+                onCaptureComplete(front, captureState.backImageUri?.let(Uri::parse))
+            }
+            IdCardCaptureStage.FRONT -> Unit
         }
     }
 
@@ -170,21 +236,12 @@ fun IdCardGuidedCaptureScreen(
                 onBack = onBack
             )
         } else {
-            val controller = remember(lifecycleOwner) {
-                IdCardCameraController(context = context, lifecycleOwner = lifecycleOwner)
-            }
-            LaunchedEffect(flashOn, controller) {
-                controller.setFlashMode(if (flashOn) ImageCapture.FLASH_MODE_ON else ImageCapture.FLASH_MODE_OFF)
-            }
             AndroidView(
                 modifier = Modifier
                     .fillMaxSize()
                     .onGloballyPositioned { containerBounds = it.boundsInRoot() },
                 factory = { ctx -> PreviewView(ctx).also { previewView -> controller.bind(previewView) } }
             )
-            DisposableEffect(controller) {
-                onDispose { controller.unbind() }
-            }
 
             IdCardGuideOverlay(
                 stage = captureState.stage,
@@ -210,10 +267,30 @@ fun IdCardGuidedCaptureScreen(
             IdCardCaptureControls(
                 stage = captureState.stage,
                 enabled = !isProcessing,
+                supportState = uhdSupportState,
                 modifier = Modifier.align(Alignment.BottomCenter),
                 onImport = { importLauncher.launch("image/*") },
                 onCapture = onCapture@{
-                    if (isProcessing) return@onCapture
+                    val side = if (captureState.stage == IdCardCaptureStage.FRONT) "front" else "back"
+                    // Pure, unit-tested guard order; every rejection logs its exact reason so a
+                    // dead shutter tap is never a mystery again.
+                    val rejection = captureClickRejection(
+                        supportState = uhdSupportState,
+                        isProcessing = isProcessing,
+                        gateBusy = captureShutterGate.isCapturing
+                    )
+                    if (rejection != null) {
+                        logCaptureClick("rejected reason=$rejection")
+                        return@onCapture
+                    }
+                    // Acquire the single-flight gate SILENTLY — the shutter sound plays only
+                    // when the controller confirms a real takePicture submission (below).
+                    if (!captureShutterGate.onCaptureAccepted()) {
+                        logCaptureClick("rejected reason=gate_busy")
+                        return@onCapture
+                    }
+                    logCaptureClick("accepted stage=${captureState.stage}")
+                    logCaptureFlow("${side}_request_accepted")
                     isProcessing = true
                     val prefix = if (captureState.stage == IdCardCaptureStage.FRONT) "id_card_front" else "id_card_back"
                     val frameRect = frameBounds?.let { fb ->
@@ -227,22 +304,86 @@ fun IdCardGuidedCaptureScreen(
                         }
                     }
                     val containerSize = containerBounds?.let { IdCardCaptureContainerSize(it.width, it.height) }
-                    controller.capture(outputDirectory = outputDirectory, filePrefix = "$prefix-raw") onCaptured@{ uri ->
+                    controller.capture(
+                        outputDirectory = outputDirectory,
+                        filePrefix = "$prefix-raw",
+                        // Fires only when the ImageCapture use case exists, immediately before
+                        // the real takePicture — the sole shutter-sound trigger. An unbound
+                        // camera returns null with no submission and therefore no sound.
+                        onCaptureSubmitted = {
+                            logCaptureFlow("${side}_submission_succeeded")
+                            captureShutterGate.onCaptureSubmitted()
+                        }
+                    ) onCaptured@{ uri ->
+                        logCaptureFlow("${side}_camera_result received=${uri != null}")
                         if (uri == null) {
+                            // Submission failed or capture errored: re-arm silently for retry
+                            // and make sure the live preview didn't freeze in the process.
+                            logCaptureFlow("failed side=${side.uppercase()} step=camera_result reason=null_result")
+                            captureShutterGate.onCaptureFinished()
                             isProcessing = false
+                            controller.ensurePreviewStreaming()
                             return@onCaptured
                         }
                         scope.launch {
-                            val baked = IdCardCaptureBaker.bakeFromCameraCapture(
-                                context = context,
-                                sourceUri = uri,
-                                frameRect = frameRect,
-                                containerSize = containerSize,
-                                outputDirectory = outputDirectory,
-                                filePrefix = prefix
-                            ) ?: uri
-                            captureState = IdCardCaptureFlow.onSideCaptured(captureState, baked.toString())
-                            isProcessing = false
+                            // finally guarantees BOTH flags reset on every exit: success,
+                            // quality rejection, baking failure, cancellation, or an
+                            // unexpected throw — a wedged gate/spinner must be impossible. On
+                            // cancellation the try exits before onSideCaptured, so
+                            // captureState is never updated. Preview recovery runs ONLY on
+                            // failure — a successful Front commit transitions to Back with the
+                            // live camera untouched, and a successful Back leaves the screen.
+                            var committed = false
+                            try {
+                                // Runtime PROOF of the 4K requirement: read the raw JPEG's
+                                // actual bounds (header only) and reject a sub-UHD capture in
+                                // a controlled way — no review state, raw file deleted, gate
+                                // re-armed by the finally, no second sound (the gate plays
+                                // per accepted submission only).
+                                val rawInfo = IdCardRawCaptureInspector.inspect(context, uri)
+                                if (rawInfo == null) {
+                                    logCaptureFlow("failed side=${side.uppercase()} step=raw_validation reason=unreadable")
+                                    runCatching { uri.path?.let { File(it).delete() } }
+                                    Toast.makeText(
+                                        context,
+                                        "Could not verify the capture. Please try again.",
+                                        Toast.LENGTH_SHORT
+                                    ).show()
+                                    return@launch
+                                }
+                                if (!rawInfo.meetsUhd) {
+                                    logCaptureFlow("failed side=${side.uppercase()} step=raw_validation reason=below_uhd")
+                                    runCatching { uri.path?.let { File(it).delete() } }
+                                    Toast.makeText(
+                                        context,
+                                        "Capture quality was below 4K. Please try again.",
+                                        Toast.LENGTH_SHORT
+                                    ).show()
+                                    return@launch
+                                }
+                                logCaptureFlow("${side}_raw_validated meetsUhd=true")
+                                logCaptureFlow("${side}_bake_started")
+                                val baked = IdCardCaptureBaker.bakeFromCameraCapture(
+                                    context = context,
+                                    sourceUri = uri,
+                                    frameRect = frameRect,
+                                    containerSize = containerSize,
+                                    outputDirectory = outputDirectory,
+                                    filePrefix = prefix
+                                ) ?: uri
+                                logCaptureFlow("${side}_bake_completed")
+                                captureState = IdCardCaptureFlow.onSideCaptured(captureState, baked.toString())
+                                committed = true
+                                logCaptureFlow("${side}_state_committed")
+                            } finally {
+                                captureShutterGate.onCaptureFinished()
+                                isProcessing = false
+                                if (!committed) {
+                                    // Failure only: never recovery-bind across a successful
+                                    // Front->Back transition or while leaving for review.
+                                    controller.ensurePreviewStreaming()
+                                }
+                            }
                         }
                     }
                 },
@@ -422,12 +563,18 @@ private fun DrawScope.drawCornerBrackets(frameRect: Rect) {
 private fun IdCardCaptureControls(
     stage: IdCardCaptureStage,
     enabled: Boolean,
+    // Authoritative strict-4K state from the CameraX bind: CHECKING quietly disables the
+    // shutter until the attached resolution is known; only a PROVEN sub-UHD attachment shows
+    // the unsupported warning; ERROR explains a failed camera start. Import Images stays fully
+    // available in every state, and a SUPPORTED publication clears any warning in place.
+    supportState: UhdSupportState,
     modifier: Modifier = Modifier,
     onImport: () -> Unit,
     onCapture: () -> Unit,
     onSkipBack: () -> Unit,
     onUndo: () -> Unit
 ) {
+    val captureEnabled = supportState == UhdSupportState.SUPPORTED
     Surface(modifier = modifier.fillMaxWidth(), color = Color.Black) {
         Column(
             modifier = Modifier
@@ -435,6 +582,24 @@ private fun IdCardCaptureControls(
                 .padding(bottom = 18.dp, top = 10.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
+            val warningText = when (supportState) {
+                UhdSupportState.UNSUPPORTED ->
+                    "This camera does not support the required 4K ID-card capture. " +
+                        "Use Import Images or another camera."
+                UhdSupportState.ERROR ->
+                    "The camera could not start. Close and reopen this screen, or use Import Images."
+                UhdSupportState.CHECKING, UhdSupportState.SUPPORTED -> null
+            }
+            if (warningText != null) {
+                Text(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 24.dp, vertical = 4.dp),
+                    text = warningText,
+                    color = Color(0xFFF6C85F),
+                    style = MaterialTheme.typography.labelSmall
+                )
+            }
             if (stage == IdCardCaptureStage.BACK) {
                 TextButton(onClick = onSkipBack, enabled = enabled) {
                     Text("Use front only", color = Color.White)
@@ -471,11 +636,15 @@ private fun IdCardCaptureControls(
                     modifier = Modifier
                         .align(Alignment.Center)
                         .size(74.dp)
-                        .border(3.dp, GreenAccent, CircleShape)
+                        .border(3.dp, if (captureEnabled) GreenAccent else Color(0xFF5E6067), CircleShape)
                         .padding(7.dp)
                         .clip(CircleShape)
-                        .background(if (enabled) Color.White else Color(0xFFB8BDC4))
-                        .clickable(enabled = enabled, onClick = onCapture, onClickLabel = "Capture")
+                        .background(if (enabled && captureEnabled) Color.White else Color(0xFFB8BDC4))
+                        .clickable(
+                            enabled = enabled && captureEnabled,
+                            onClick = onCapture,
+                            onClickLabel = "Capture"
+                        )
                 )
                 Column(
                     modifier = Modifier

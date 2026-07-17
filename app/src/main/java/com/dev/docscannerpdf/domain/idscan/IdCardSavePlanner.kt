@@ -57,11 +57,14 @@ object IdCardSavePlanner {
         if (state.frontBaseImageUri.isBlank()) {
             return IdCardSavePlan.Invalid("No front image is available to save.")
         }
+        // settledRenderedImageUri: only a render produced by the side's CURRENT filter may be
+        // reused at save time — while a newer filter is still rendering, the state keeps the
+        // previous filter's output on display, and saving that would apply the wrong filter.
         val front = IdCardSideSavePlan(
             side = IdCardReviewSide.FRONT,
             baseImageUri = state.frontBaseImageUri,
             filter = state.frontFilter,
-            renderedImageUri = state.frontRenderedImageUri,
+            renderedImageUri = state.settledRenderedImageUri(IdCardReviewSide.FRONT),
             rotationDegrees = state.frontRotationDegrees
         )
         val back = state.backBaseImageUri?.takeIf { it.isNotBlank() }?.let { backBase ->
@@ -69,7 +72,7 @@ object IdCardSavePlanner {
                 side = IdCardReviewSide.BACK,
                 baseImageUri = backBase,
                 filter = state.backFilter,
-                renderedImageUri = state.backRenderedImageUri,
+                renderedImageUri = state.settledRenderedImageUri(IdCardReviewSide.BACK),
                 rotationDegrees = state.backRotationDegrees
             )
         }

@@ -57,26 +57,35 @@ class DocumentFilterTest {
     }
 
     @Test
-    fun enhanceUsesContrast112AndSharpen018() {
-        assertArrayEquals(contrastColorMatrix(1.12f), DocumentFilter.ENHANCE.colorMatrix, delta)
-        assertEquals(-15.3f, requireNotNull(DocumentFilter.ENHANCE.colorMatrix)[4], 0.001f)
-        assertEquals(0.18f, DocumentFilter.ENHANCE.sharpenStrength, delta)
-    }
+    fun enhanceMatchesTheCalibratedCamScannerRecipe() {
+        assertEquals(0.91f, ENHANCE_GAMMA, delta)
+        assertEquals(180, ENHANCE_SHOULDER_START)
+        assertEquals(1.18f, ENHANCE_SATURATION, delta)
+        assertEquals(0.18f, ENHANCE_SHARPEN, delta)
 
-    @Test
-    fun idScanPostProcessorDefaultsMatchEnhanceSpecification() {
-        // Regression guard for the primitive extraction: IdScanPostProcessor delegates its
-        // contrast/sharpen to DocumentFilterPrimitives with these Config defaults, and ENHANCE
-        // is specified to reproduce them exactly — if either drifts, this fails.
-        val config = IdScanPostProcessor.Config()
-        assertEquals(1.12f, config.contrastBoost, delta)
-        assertEquals(0.18f, config.sharpenStrength, delta)
+        // The shipped recipe: shouldered tone LUT + saturation-only matrix + mild sharpen.
+        // No linear contrast/brightness term exists — that was what clipped highlights.
         assertArrayEquals(
-            contrastColorMatrix(config.contrastBoost),
+            shoulderedGammaLut(ENHANCE_GAMMA, ENHANCE_SHOULDER_START),
+            DocumentFilter.ENHANCE.toneLut
+        )
+        assertArrayEquals(
+            saturationColorMatrix(ENHANCE_SATURATION),
             DocumentFilter.ENHANCE.colorMatrix,
             delta
         )
-        assertEquals(config.sharpenStrength, DocumentFilter.ENHANCE.sharpenStrength, delta)
+        assertEquals(ENHANCE_SHARPEN, DocumentFilter.ENHANCE.sharpenStrength, delta)
+    }
+
+    @Test
+    fun idScanPostProcessorSpecificationRemainsUnchanged() {
+        // The OCR-path processor keeps its own long-standing recipe (contrast 1.12, sharpen
+        // 0.18, delegated to the shared primitives). The user-facing ENHANCE filter is now
+        // calibrated independently of it — this guards the processor's spec from drifting as
+        // a side effect of filter tuning.
+        val config = IdScanPostProcessor.Config()
+        assertEquals(1.12f, config.contrastBoost, delta)
+        assertEquals(0.18f, config.sharpenStrength, delta)
     }
 
     @Test

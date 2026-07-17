@@ -5,6 +5,7 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Matrix
 import android.net.Uri
+import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -51,6 +52,15 @@ object IdCardCaptureBaker {
             upright
         }
         val landscape = ensureLandscape(cropped)
+        // Deterministic device-QA evidence, paired with ID_CARD_CAPTURE_RAW: the baked card is
+        // a pixel-for-pixel CROP of the raw capture (createBitmap region extraction — no
+        // inSampleSize, no createScaledBitmap, no scaling anywhere in this pipeline), so its
+        // dimensions are legitimately smaller than the raw source.
+        Log.i(
+            "IdCardCapture",
+            "ID_CARD_CAPTURE_BAKED width=${landscape.width} height=${landscape.height} " +
+                "sourceWidth=${upright.width} sourceHeight=${upright.height} downsampled=false"
+        )
         val uri = saveJpeg(landscape, outputDirectory, filePrefix)
         // Bitmap has no value equals/hashCode, so this set dedupes by reference identity —
         // every distinct intermediate bitmap gets recycled exactly once.

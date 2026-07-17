@@ -2,8 +2,10 @@ package com.dev.docscannerpdf.domain.idscan
 
 import com.dev.docscannerpdf.domain.filter.DocumentFilter
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class IdCardReviewFlowTest {
@@ -125,7 +127,11 @@ class IdCardReviewFlowTest {
     fun originalRestoresOnlySelectedSideToBase() {
         var state = frontAndBack().copy(
             frontRenderedImageUri = "file://rendered/front-enhance.jpg",
-            backRenderedImageUri = "file://rendered/back-enhance.jpg"
+            backRenderedImageUri = "file://rendered/back-enhance.jpg",
+            frontRenderedFilter = DocumentFilter.ENHANCE,
+            backRenderedFilter = DocumentFilter.ENHANCE,
+            frontRenderPending = false,
+            backRenderPending = false
         )
         state = IdCardReviewFlow.selectSide(state, IdCardReviewSide.BACK)
 
@@ -156,13 +162,180 @@ class IdCardReviewFlowTest {
 
     @Test
     fun reapplyingSettledFilterIsNoOp() {
-        val settled = frontAndBack().copy(frontRenderedImageUri = "file://rendered/front-enhance.jpg")
+        val settled = frontAndBack().copy(
+            frontRenderedImageUri = "file://rendered/front-enhance.jpg",
+            frontRenderedFilter = DocumentFilter.ENHANCE,
+            frontRenderPending = false
+        )
 
         // Same instance back means no re-render is triggered and nothing can compound.
         assertSame(settled, IdCardReviewFlow.applyFilter(settled, DocumentFilter.ENHANCE))
 
         val original = IdCardReviewFlow.applyFilter(settled, DocumentFilter.ORIGINAL)
         assertSame(original, IdCardReviewFlow.applyFilter(original, DocumentFilter.ORIGINAL))
+    }
+
+    @Test
+    fun reapplyingFilterAlreadyInFlightIsNoOp() {
+        // Default state: ENHANCE selected, render pending — tapping Enhance again must not
+        // restart the render.
+        val pending = frontAndBack()
+        assertTrue(pending.isRenderPending(IdCardReviewSide.FRONT))
+
+        assertSame(pending, IdCardReviewFlow.applyFilter(pending, DocumentFilter.ENHANCE))
+    }
+
+    // --- render-pending state (truthful processing indicator) ---
+
+    @Test
+    fun newFilterKeepsLastRenderedImageWhilePendingAndNeverOffersItToSave() {
+        val settled = frontAndBack().copy(
+            frontRenderedImageUri = "file://rendered/front-enhance.jpg",
+            frontRenderedFilter = DocumentFilter.ENHANCE,
+            frontRenderPending = false
+        )
+
+        val switching = IdCardReviewFlow.applyFilter(settled, DocumentFilter.SEPIA)
+
+        // The display keeps the last valid render (no flash back to base)...
+        assertEquals("file://rendered/front-enhance.jpg", switching.displayImageUri(IdCardReviewSide.FRONT))
+        assertTrue(switching.isRenderPending(IdCardReviewSide.FRONT))
+        // ...but the save path must never treat the old ENHANCE output as the SEPIA result.
+        assertNull(switching.settledRenderedImageUri(IdCardReviewSide.FRONT))
+    }
+
+    @Test
+    fun publishClearsPendingAndSettlesTheRender() {
+        val published = IdCardReviewFlow.withRenderedFilter(
+            state = frontAndBack(),
+            side = IdCardReviewSide.FRONT,
+            filter = DocumentFilter.ENHANCE,
+            baseImageUri = "file://base/front.jpg",
+            renderedImageUri = "file://rendered/front-enhance.jpg"
+        )
+
+        assertFalse(published.isRenderPending(IdCardReviewSide.FRONT))
+        assertEquals(DocumentFilter.ENHANCE, published.renderedFilter(IdCardReviewSide.FRONT))
+        assertEquals(
+            "file://rendered/front-enhance.jpg",
+            published.settledRenderedImageUri(IdCardReviewSide.FRONT)
+        )
+    }
+
+    // --- truthful render-failure recovery (selection always describes displayed pixels) ---
+
+    @Test
+    fun initialEnhanceFailureRestoresOriginalAndBase() {
+        // Nothing rendered yet: the only truthful state after a failed default Enhance is
+        // Original showing the base image.
+        val failed = IdCardReviewFlow.withRenderFailed(
+            frontAndBack(), IdCardReviewSide.FRONT, DocumentFilter.ENHANCE, "file://base/front.jpg"
+        )
+
+        assertEquals(DocumentFilter.ORIGINAL, failed.frontFilter)
+        assertNull(failed.frontRenderedImageUri)
+        assertNull(failed.frontRenderedFilter)
+        assertFalse(failed.isRenderPending(IdCardReviewSide.FRONT))
+        assertEquals("file://base/front.jpg", failed.displayImageUri(IdCardReviewSide.FRONT))
+    }
+
+    @Test
+    fun failedSwitchFromEnhanceToSepiaRestoresEnhanceAndItsRender() {
+        var state = frontAndBack().copy(
+            frontRenderedImageUri = "file://rendered/front-enhance.jpg",
+            frontRenderedFilter = DocumentFilter.ENHANCE,
+            frontRenderPending = false
+        )
+        state = IdCardReviewFlow.applyFilter(state, DocumentFilter.SEPIA)
+
+        val failed = IdCardReviewFlow.withRenderFailed(
+            state, IdCardReviewSide.FRONT, DocumentFilter.SEPIA, "file://base/front.jpg"
+        )
+
+        // The Enhance pixels stayed on screen, so the selection reverts to Enhance.
+        assertEquals(DocumentFilter.ENHANCE, failed.frontFilter)
+        assertEquals("file://rendered/front-enhance.jpg", failed.frontRenderedImageUri)
+        assertEquals(DocumentFilter.ENHANCE, failed.frontRenderedFilter)
+        assertFalse(failed.isRenderPending(IdCardReviewSide.FRONT))
+        // And the reverted state is settled — save planning reuses the visible Enhance pixels.
+        assertEquals(
+            "file://rendered/front-enhance.jpg",
+            failed.settledRenderedImageUri(IdCardReviewSide.FRONT)
+        )
+    }
+
+    @Test
+    fun renderFailureNeverChangesTheOtherSide() {
+        val state = frontAndBack().copy(
+            backRenderedImageUri = "file://rendered/back-warm.jpg",
+            backRenderedFilter = DocumentFilter.WARM,
+            backFilter = DocumentFilter.WARM,
+            backRenderPending = false
+        )
+
+        val failed = IdCardReviewFlow.withRenderFailed(
+            state, IdCardReviewSide.FRONT, DocumentFilter.ENHANCE, "file://base/front.jpg"
+        )
+
+        assertEquals(DocumentFilter.WARM, failed.backFilter)
+        assertEquals("file://rendered/back-warm.jpg", failed.backRenderedImageUri)
+        assertEquals(state.backRenderPending, failed.backRenderPending)
+    }
+
+    @Test
+    fun staleFailureCannotAlterANewerSelection() {
+        // The SEPIA render failed, but the user has already moved on to BW.
+        val state = IdCardReviewFlow.applyFilter(frontAndBack(), DocumentFilter.BW)
+
+        val afterStaleFilter = IdCardReviewFlow.withRenderFailed(
+            state, IdCardReviewSide.FRONT, DocumentFilter.SEPIA, "file://base/front.jpg"
+        )
+        assertEquals(state, afterStaleFilter)
+
+        // Same for a failure whose base predates a crop.
+        val cropped = IdCardReviewFlow.withCroppedBase(
+            frontAndBack(), IdCardReviewSide.FRONT, "file://base/front-cropped.jpg"
+        )
+        val afterStaleBase = IdCardReviewFlow.withRenderFailed(
+            cropped, IdCardReviewSide.FRONT, DocumentFilter.ENHANCE, "file://base/front.jpg"
+        )
+        assertEquals(cropped, afterStaleBase)
+    }
+
+    @Test
+    fun savePlanningAfterFailureMatchesTheVisibleSelectedFilter() {
+        // Failure reverted the front to ORIGINAL/base — the plan must save exactly that.
+        val failed = IdCardReviewFlow.withRenderFailed(
+            frontOnly(), IdCardReviewSide.FRONT, DocumentFilter.ENHANCE, "file://base/front.jpg"
+        )
+
+        val plan = IdCardSavePlanner.plan(failed) as IdCardSavePlan.Ready
+
+        assertEquals(DocumentFilter.ORIGINAL, plan.front.filter)
+        assertNull(plan.front.renderedImageUri)
+        assertFalse(plan.front.requiresFilterRender)
+    }
+
+    @Test
+    fun retryingTheFailedFilterRemainsPossible() {
+        val failed = IdCardReviewFlow.withRenderFailed(
+            frontOnly(), IdCardReviewSide.FRONT, DocumentFilter.ENHANCE, "file://base/front.jpg"
+        )
+        assertEquals(DocumentFilter.ORIGINAL, failed.frontFilter)
+
+        val retry = IdCardReviewFlow.applyFilter(failed, DocumentFilter.ENHANCE)
+
+        assertEquals(DocumentFilter.ENHANCE, retry.frontFilter)
+        assertTrue(retry.isRenderPending(IdCardReviewSide.FRONT))
+    }
+
+    @Test
+    fun initialStateIsPendingForTheDefaultEnhance() {
+        val state = frontAndBack()
+
+        assertTrue(state.isRenderPending(IdCardReviewSide.FRONT))
+        assertEquals(DocumentFilter.ENHANCE, state.frontFilter)
+        assertNull(state.settledRenderedImageUri(IdCardReviewSide.FRONT))
     }
 
     // --- withRenderedFilter (pure half of stale-result rejection) ---

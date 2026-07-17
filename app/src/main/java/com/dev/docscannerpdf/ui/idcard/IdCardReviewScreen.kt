@@ -1,6 +1,7 @@
 package com.dev.docscannerpdf.ui.idcard
 
 import android.net.Uri
+import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.ui.draw.clip
@@ -16,9 +17,11 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -30,7 +33,9 @@ import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.FilterVintage
 import androidx.compose.material.icons.filled.HelpOutline
 import androidx.compose.material.icons.filled.WaterDrop
+import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -56,9 +61,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.dev.docscannerpdf.domain.filter.DocumentFilter
 import com.dev.docscannerpdf.domain.idscan.IdCardReviewSide
+import com.dev.docscannerpdf.domain.idscan.IdCardReviewSlotPlanner
 import com.dev.docscannerpdf.domain.idscan.IdCardReviewState
 import com.dev.docscannerpdf.domain.pdf.CardRect
-import com.dev.docscannerpdf.domain.pdf.IdCardLayoutPlanner
 import com.dev.docscannerpdf.ui.ImportedImageBitmap
 
 private val ScreenBackground = Color(0xFF101114)
@@ -70,10 +75,11 @@ private val DarkChip = Color(0xFF2A2C31)
 private val TileCornerRadius = 10.dp
 
 /**
- * CamScanner-style ID-card post-capture review: a large white A4-like page showing the captured
- * front (and back, when present) — already baked into landscape card crops by the guided capture
- * screen, so they fill their tiles with no large white side padding — with a CamScanner-matching
- * title/tip/toolbar chrome. Tapping either image ONLY selects it as the target for
+ * CamScanner-style ID-card post-capture review: a wide white page showing the COMPLETE captured
+ * front (and back, when present) — each side contain-fit inside an equal slot, never cropped,
+ * zoomed, or stretched — with CamScanner-matching title/tip/toolbar chrome. Purely a display
+ * surface: the saved image, gallery export, and PDF pipelines are untouched by anything here.
+ * Tapping either image ONLY selects it as the target for
  * Crop/Rotate/Filter — it never rotates or otherwise mutates the image; the user already
  * complained about cards rotating unexpectedly, so rotation happens solely through the explicit
  * Rotate toolbar button. The Filter button toggles a picker strip showing the shared
@@ -100,7 +106,14 @@ fun IdCardReviewScreen(
     var showFilterPicker by remember { mutableStateOf(false) }
 
     Scaffold(
-        modifier = Modifier.safeDrawingPadding(),
+        // Background BEFORE safeDrawingPadding: on edge-to-edge targets (35+),
+        // window.statusBarColor is a no-op, so the area behind the status bar shows whatever is
+        // painted under it — without this the review screen got a white status-bar strip. The
+        // dark fill matches the dark app bar; DarkSystemBarsEffect keeps the icons light.
+        modifier = Modifier
+            .fillMaxSize()
+            .background(TipBarBackground)
+            .safeDrawingPadding(),
         topBar = {
             Column {
                 TopAppBar(
@@ -139,14 +152,27 @@ fun IdCardReviewScreen(
                     )
                 )
                 Surface(color = TipBarBackground) {
-                    Text(
-                        text = "Tap an image to select it. Use Rotate if needed.",
+                    Row(
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(horizontal = 16.dp, vertical = 8.dp),
-                        color = Color(0xFFB8BDC4),
-                        style = MaterialTheme.typography.bodySmall
-                    )
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Icon(
+                            Icons.Outlined.Info,
+                            contentDescription = null,
+                            tint = Color(0xFFB8BDC4),
+                            modifier = Modifier.size(15.dp)
+                        )
+                        Text(
+                            // Truthful to actual behavior: tapping only selects; rotation is
+                            // the explicit Rotate tool's job (tap-to-rotate must never return).
+                            text = "Tap an image to select it. Use Rotate if needed.",
+                            color = Color(0xFFB8BDC4),
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
                 }
             }
         },
@@ -170,96 +196,115 @@ fun IdCardReviewScreen(
         },
         containerColor = ScreenBackground
     ) { innerPadding ->
-        Box(
+        // CamScanner-matching canvas: a wide white page with ~14dp side margins that starts
+        // just below the instruction row (no big dark gap) but ends visibly ABOVE the bottom
+        // controls — the reference leaves a clear dark band there. The clearance adapts:
+        // ~52dp normally, proportionally less on short screens (never negative canvas), and
+        // recomputes automatically when the filter strip opens (innerPadding grows) without
+        // touching ContentScale.Fit or the slot math.
+        BoxWithConstraints(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding)
-                .padding(horizontal = 16.dp, vertical = 12.dp),
-            contentAlignment = Alignment.Center
         ) {
-            BoxWithConstraints(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                // Same contain-fit rule as the final A4 preview: fit the page within both the
-                // available width AND height so it renders as large as possible without being
-                // squeezed by the bottom toolbar.
-                val pageAspectRatio = 1f / 1.414f
-                val pageWidth = minOf(maxWidth, maxHeight * pageAspectRatio)
-                val pageHeight = pageWidth / pageAspectRatio
+            val density = LocalDensity.current
+            val bottomClearance = with(density) {
+                IdCardReviewSlotPlanner.canvasBottomClearance(
+                    availableHeightPx = maxHeight.toPx(),
+                    preferredClearancePx = 52.dp.toPx()
+                ).toDp()
+            }
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(start = 14.dp, end = 14.dp, top = 6.dp, bottom = bottomClearance)
+            ) {
+            Surface(
+                modifier = Modifier.fillMaxSize(),
+                shape = RoundedCornerShape(0.dp),
+                color = Color.White
+            ) {
+                BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+                    val density = LocalDensity.current
+                    val pageWidthPx = with(density) { maxWidth.toPx() }
+                    val pageHeightPx = with(density) { maxHeight.toPx() }
+                    val sideCount = if (state.backBaseImageUri != null) 2 else 1
+                    // Equal OUTER slots only — the image inside each tile is contain-fit
+                    // (never cropped/zoomed), so the complete capture is always visible.
+                    val slotRects = IdCardReviewSlotPlanner.plan(sideCount, pageWidthPx, pageHeightPx)
 
-                Box(modifier = Modifier.width(pageWidth).height(pageHeight)) {
-                    Surface(
-                        modifier = Modifier.fillMaxSize(),
-                        shape = RoundedCornerShape(0.dp),
-                        color = Color.White
-                    ) {
-                        BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
-                            val density = LocalDensity.current
-                            val pageWidthPx = with(density) { maxWidth.toPx() }
-                            val pageHeightPx = with(density) { maxHeight.toPx() }
-                            val sideCount = if (state.backBaseImageUri != null) 2 else 1
-                            val cardRects = IdCardLayoutPlanner.plan(sideCount, pageWidthPx, pageHeightPx)
-
-                            IdCardReviewTile(
-                                imageUri = Uri.parse(state.frontRenderedImageUri ?: state.frontBaseImageUri),
-                                rotationDegrees = state.frontRotationDegrees,
-                                selected = state.selectedSide == IdCardReviewSide.FRONT,
-                                rect = cardRects[0],
-                                density = density,
-                                onClick = { onSelectSide(IdCardReviewSide.FRONT) }
-                            )
-                            val backDisplayUri = state.displayImageUri(IdCardReviewSide.BACK)
-                            if (backDisplayUri != null) {
-                                IdCardReviewTile(
-                                    imageUri = Uri.parse(backDisplayUri),
-                                    rotationDegrees = state.backRotationDegrees,
-                                    selected = state.selectedSide == IdCardReviewSide.BACK,
-                                    rect = cardRects[1],
-                                    density = density,
-                                    onClick = { onSelectSide(IdCardReviewSide.BACK) }
-                                )
-                            }
-                        }
-                    }
-
-                    Surface(
-                        modifier = Modifier
-                            .align(Alignment.TopStart)
-                            .padding(8.dp),
-                        shape = RoundedCornerShape(4.dp),
-                        color = Color(0xCC202124)
-                    ) {
-                        Text(
-                            text = "01",
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
-                            color = Color.White,
-                            style = MaterialTheme.typography.labelSmall,
-                            fontWeight = FontWeight.Bold
+                    IdCardReviewTile(
+                        imageUri = Uri.parse(state.frontRenderedImageUri ?: state.frontBaseImageUri),
+                        rotationDegrees = state.frontRotationDegrees,
+                        selected = state.selectedSide == IdCardReviewSide.FRONT,
+                        isRendering = state.isRenderPending(IdCardReviewSide.FRONT),
+                        rect = slotRects[0],
+                        density = density,
+                        onClick = { onSelectSide(IdCardReviewSide.FRONT) }
+                    )
+                    val backDisplayUri = state.displayImageUri(IdCardReviewSide.BACK)
+                    if (backDisplayUri != null) {
+                        IdCardReviewTile(
+                            imageUri = Uri.parse(backDisplayUri),
+                            rotationDegrees = state.backRotationDegrees,
+                            selected = state.selectedSide == IdCardReviewSide.BACK,
+                            isRendering = state.isRenderPending(IdCardReviewSide.BACK),
+                            rect = slotRects[1],
+                            density = density,
+                            onClick = { onSelectSide(IdCardReviewSide.BACK) }
                         )
-                    }
-
-                    Surface(
-                        modifier = Modifier
-                            .align(Alignment.TopEnd)
-                            .padding(8.dp)
-                            .clickable(onClick = onCompare),
-                        shape = RoundedCornerShape(100.dp),
-                        color = DarkChip
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(4.dp)
-                        ) {
-                            Icon(
-                                Icons.Default.Compare,
-                                contentDescription = null,
-                                tint = Color.White,
-                                modifier = Modifier.size(16.dp)
-                            )
-                            Text("Compare", color = Color.White, style = MaterialTheme.typography.labelMedium)
-                        }
                     }
                 }
             }
+
+            Surface(
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .padding(6.dp),
+                shape = RoundedCornerShape(4.dp),
+                color = Color(0xCC202124)
+            ) {
+                Text(
+                    text = "01",
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                    color = Color.White,
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+
+            // The VISUAL chip stays compact (CamScanner's squared tab, ~5dp corners — not a
+            // pill), while the clickable target is an outer transparent box guaranteed at
+            // least 48dp tall/wide for accessibility. The invisible target never enlarges
+            // the visible chip.
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .sizeIn(minWidth = 48.dp, minHeight = 48.dp)
+                    .clickable(onClick = onCompare),
+                contentAlignment = Alignment.Center
+            ) {
+                Surface(
+                    modifier = Modifier.padding(horizontal = 6.dp),
+                    shape = RoundedCornerShape(5.dp),
+                    color = DarkChip
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Icon(
+                            Icons.Default.Compare,
+                            contentDescription = "Compare",
+                            tint = Color.White,
+                            modifier = Modifier.size(14.dp)
+                        )
+                        Text("Compare", color = Color.White, style = MaterialTheme.typography.labelSmall)
+                    }
+                }
+            }
+        }
         }
     }
 
@@ -302,16 +347,20 @@ private fun IdCardRenameDialog(
 }
 
 /**
- * A single captured side's landscape card thumbnail. Deliberately has no visible "Front"/"Back"
- * label — CamScanner's review page keeps the white document page clean — and selection (which
- * side Crop/Filter currently target) is shown as a subtle neutral-gray border rather than a
- * strong blue editing outline.
+ * A single captured side's preview tile. The slot ([rect]) is only an OUTER allocation — the
+ * bitmap inside uses `ContentScale.Fit`, so the COMPLETE captured image is always visible at
+ * its intrinsic aspect ratio (see [IdCardReviewSlotPlanner.containedImageSize] for the pure
+ * specification). `Crop` is deliberately banned here: it zoomed into the picture and cut off
+ * the left/right (and sometimes top/bottom) content whenever the capture wasn't exactly
+ * card-ratio. Letterboxing against the white page is expected and correct. Selection (which
+ * side Crop/Rotate/Filter target) shows as a subtle gray outline on the selected slot only.
  */
 @Composable
 private fun IdCardReviewTile(
     imageUri: Uri,
     rotationDegrees: Int,
     selected: Boolean,
+    isRendering: Boolean,
     rect: CardRect,
     density: androidx.compose.ui.unit.Density,
     onClick: () -> Unit
@@ -320,28 +369,55 @@ private fun IdCardReviewTile(
     val offsetY = with(density) { rect.top.toDp() }
     val tileWidth = with(density) { rect.width.toDp() }
     val tileHeight = with(density) { rect.height.toDp() }
+    // Rotation-aware inner container: for 90°/270° the container takes the slot's dimensions
+    // SWAPPED, so after rotating around its center its on-screen footprint is exactly the
+    // slot — the complete image stays visible and can never overflow into the other side.
+    val innerSize = IdCardReviewSlotPlanner.rotationAwareContainerSize(
+        slotWidth = rect.width,
+        slotHeight = rect.height,
+        rotationDegrees = rotationDegrees
+    )
+    val innerWidth = with(density) { innerSize.width.toDp() }
+    val innerHeight = with(density) { innerSize.height.toDp() }
     Box(
         modifier = Modifier
             .offset(x = offsetX, y = offsetY)
             .size(width = tileWidth, height = tileHeight)
-            .clip(RoundedCornerShape(TileCornerRadius))
-            .border(
-                width = if (selected) 1.5.dp else 1.dp,
-                color = if (selected) SelectedBorder else UnselectedBorder,
-                shape = RoundedCornerShape(TileCornerRadius)
+            .then(
+                if (selected) {
+                    Modifier.border(1.5.dp, SelectedBorder, RoundedCornerShape(TileCornerRadius))
+                } else {
+                    Modifier
+                }
             )
-            .clickable(onClick = onClick)
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center
     ) {
-        // The guided capture screen already bakes each side into a tight landscape card
-        // crop, so Crop (fill the tile, no letterboxing) is correct here — unlike a raw,
-        // arbitrary-aspect photo, which would need Fit to avoid distorting/clipping content.
         ImportedImageBitmap(
             uri = imageUri,
             modifier = Modifier
-                .fillMaxSize()
+                .size(width = innerWidth, height = innerHeight)
                 .graphicsLayer { rotationZ = rotationDegrees.toFloat() },
-            contentScale = androidx.compose.ui.layout.ContentScale.Crop
+            contentScale = androidx.compose.ui.layout.ContentScale.Fit
         )
+        // Truthful processing state: while the selected filter's render is in flight the tile
+        // shows the last valid image plus this small indicator — never silently presenting the
+        // base as if the filter were already applied.
+        if (isRendering) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .size(28.dp)
+                    .background(Color(0x99202124), CircleShape),
+                contentAlignment = Alignment.Center
+            ) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(16.dp),
+                    color = Color.White,
+                    strokeWidth = 2.dp
+                )
+            }
+        }
     }
 }
 
@@ -423,7 +499,7 @@ private fun IdCardReviewToolbar(
                 tint = if (filterActive) SaveAccent else Color.White,
                 onClick = onFilter
             )
-            IdCardReviewToolbarButton(label = "Watermark", icon = Icons.Default.WaterDrop, onClick = onAddWatermark)
+            IdCardReviewToolbarButton(label = "Add Watermark", icon = Icons.Default.WaterDrop, onClick = onAddWatermark)
             Surface(
                 modifier = Modifier
                     .clickable(onClick = onSave)
@@ -449,11 +525,11 @@ private fun IdCardReviewToolbarButton(
     Column(
         modifier = Modifier
             .clickable(onClick = onClick)
-            .padding(horizontal = 12.dp, vertical = 4.dp),
+            .padding(horizontal = 8.dp, vertical = 4.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(4.dp)
     ) {
         Icon(imageVector = icon, contentDescription = label, tint = tint)
-        Text(text = label, color = tint, style = MaterialTheme.typography.labelSmall)
+        Text(text = label, color = tint, style = MaterialTheme.typography.labelSmall, maxLines = 1)
     }
 }

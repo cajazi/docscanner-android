@@ -12,11 +12,14 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.lifecycleScope
+import com.dev.docscannerpdf.BuildConfig
 import com.dev.docscannerpdf.MainActivity
 import com.dev.docscannerpdf.data.local.APP_DATABASE_VERSION
 import com.dev.docscannerpdf.domain.backup.BackupRepository
+import com.dev.docscannerpdf.navigation.AppSurface
 import com.dev.docscannerpdf.navigation.canHandleSystemBack
 import com.dev.docscannerpdf.navigation.handleSystemBack
+import com.dev.docscannerpdf.navigation.resolveAppSurface
 import com.dev.docscannerpdf.ui.debug.ApiHealthScreen
 import com.dev.docscannerpdf.ui.crop.CropEditorScreen
 import com.dev.docscannerpdf.ui.detection.LiveScannerScreen
@@ -46,7 +49,26 @@ internal fun DocScannerApp(host: MainActivity) {
                 BackHandler(enabled = host.canHandleSystemBack()) {
                     host.handleSystemBack()
                 }
-                if (host.appLockSettings.lockEnabled && !host.appUnlocked) {
+                // ONE authoritative decision for the top-priority surfaces (pure, unit-tested):
+                // no state outside its four inputs can deselect an active capture session.
+                val topSurface = resolveAppSurface(
+                    appLockActive = host.appLockSettings.lockEnabled && !host.appUnlocked,
+                    showOnboarding = host.showOnboarding,
+                    showIdCardGuidedCapture = host.showIdCardGuidedCapture,
+                    idCardReviewOpen = host.idCardReview != null
+                )
+                if (BuildConfig.DEBUG) {
+                    // Diagnostic: every top-surface transition is logged, so a replaced capture
+                    // screen can be traced to the exact route change that caused it.
+                    LaunchedEffect(topSurface) {
+                        Log.d(
+                            "IdCardCapture",
+                            "ID_CARD_CAPTURE_HOST surface=$topSurface " +
+                                "captureVisible=${host.showIdCardGuidedCapture}"
+                        )
+                    }
+                }
+                if (topSurface == AppSurface.APP_LOCK) {
                     AppLockScreen(
                         pinLength = APP_PIN_LENGTH,
                         biometricsAvailable = host.canUseBiometrics(),
@@ -55,9 +77,23 @@ internal fun DocScannerApp(host: MainActivity) {
                         onPinComplete = host::unlockWithPin,
                         onBiometricClick = host::showBiometricPrompt
                     )
-                } else if (host.showOnboarding) {
+                } else if (topSurface == AppSurface.ONBOARDING) {
                     OnboardingScreen(
                         onComplete = host::completeOnboarding
+                    )
+                } else if (topSurface == AppSurface.ID_CARD_CAPTURE) {
+                    // Near-modal priority (below only app-lock/onboarding): an active CameraX
+                    // capture session must never be torn down by a lower branch briefly
+                    // flickering non-null — that replaced this screen's composition node,
+                    // reconstructing the camera controller mid-visit (two controllers, double
+                    // bind, detach churn). Only showIdCardGuidedCapture itself mounts/unmounts
+                    // this screen now.
+                    IdCardGuidedCaptureScreen(
+                        outputDirectory = host.idCardCaptureDirectory,
+                        onBack = { host.showIdCardGuidedCapture = false },
+                        onCaptureComplete = { front, back ->
+                            host.beginIdCardReview(front, back)
+                        }
                     )
                 } else if (host.showCloudSync) {
                     CloudSyncScreen(
@@ -659,14 +695,6 @@ internal fun DocScannerApp(host: MainActivity) {
                             }
                         },
                         modifier = Modifier.fillMaxSize()
-                    )
-                } else if (host.showIdCardGuidedCapture) {
-                    IdCardGuidedCaptureScreen(
-                        outputDirectory = host.idCardCaptureDirectory,
-                        onBack = { host.showIdCardGuidedCapture = false },
-                        onCaptureComplete = { front, back ->
-                            host.beginIdCardReview(front, back)
-                        }
                     )
                 } else if (host.idCardCropState != null) {
                     CropEditorScreen(
