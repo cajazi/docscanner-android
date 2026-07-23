@@ -24,7 +24,6 @@ import android.print.PrintDocumentInfo
 import android.print.PrintManager
 import android.util.Log
 import androidx.activity.compose.setContent
-import androidx.activity.compose.BackHandler
 import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
@@ -601,13 +600,8 @@ class MainActivity : FragmentActivity() {
         observeInterstitialRequests()
     }
 
-    override fun onBackPressed() {
-        if (canHandleSystemBack()) {
-            handleSystemBack()
-        } else {
-            super.onBackPressed()
-        }
-    }
+    // Back navigation is handled by lifecycle-aware Compose BackHandler registrations.
+    // MainNavigation remains the centralized policy for application-level back actions.
 
     internal fun refreshAppLockSettings() {
         appLockSettings = appLockRepository.getSettings()

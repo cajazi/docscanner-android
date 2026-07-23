@@ -20,9 +20,15 @@ class FrameDropPolicy(private val maxInFlight: Int = 1) {
         }
     }
 
-    /** Releases a slot reserved by [tryAcquire]. */
+    /** Releases a slot reserved by [tryAcquire]. Clamped at zero; an unmatched release is a no-op. */
     fun release() {
-        inFlight.updateAndGet { (it - 1).coerceAtLeast(0) }
+        // Plain CAS loop instead of AtomicInteger.updateAndGet, which requires API 24
+        // (minSdk is 23 and this project uses no core-library desugaring).
+        while (true) {
+            val current = inFlight.get()
+            val next = (current - 1).coerceAtLeast(0)
+            if (inFlight.compareAndSet(current, next)) return
+        }
     }
 
     fun inFlightCount(): Int = inFlight.get()

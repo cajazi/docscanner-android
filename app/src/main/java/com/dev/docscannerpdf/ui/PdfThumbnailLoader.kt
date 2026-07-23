@@ -91,7 +91,7 @@ object PdfThumbnailLoader {
                 }.orEmpty()
             }.onFailure { throwable ->
                 if (Log.isLoggable(TAG, Log.DEBUG)) {
-                    Log.w(TAG, "Unable to render PDF pages: ${throwable.message}")
+                    Log.d(TAG, "Unable to render PDF pages: ${throwable.message}")
                 }
             }.getOrDefault(emptyList())
         }.also { pages ->
@@ -138,7 +138,7 @@ object PdfThumbnailLoader {
                 }
             }.onFailure { throwable ->
                 if (Log.isLoggable(TAG, Log.DEBUG)) {
-                    Log.w(TAG, "Unable to render PDF page $pageIndex: ${throwable.message}")
+                    Log.d(TAG, "Unable to render PDF page $pageIndex: ${throwable.message}")
                 }
             }.getOrNull()
         }
@@ -179,7 +179,7 @@ object PdfThumbnailLoader {
                 }
             }.onFailure { throwable ->
                 if (Log.isLoggable(TAG, Log.DEBUG)) {
-                    Log.w(TAG, "Unable to render document thumbnail: ${throwable.message}")
+                    Log.d(TAG, "Unable to render document thumbnail: ${throwable.message}")
                 }
             }.getOrNull()
         }
