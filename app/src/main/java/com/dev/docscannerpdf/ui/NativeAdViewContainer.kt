@@ -79,7 +79,7 @@ fun NativeAdViewContainer(
                 object : AdListener() {
                     override fun onAdFailedToLoad(loadAdError: LoadAdError) {
                         if (Log.isLoggable(TAG, Log.DEBUG)) {
-                            Log.w(TAG, "Native ad failed: ${loadAdError.message}")
+                            Log.d(TAG, "Native ad failed: ${loadAdError.message}")
                         }
                         loadFailed = true
                         nativeAd?.destroy()

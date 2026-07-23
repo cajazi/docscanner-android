@@ -68,6 +68,28 @@ class LiveCameraPipelineTest {
     }
 
     @Test
+    fun frameDropPolicyReleaseClampsAtZero() {
+        // Regression for the API-23-safe CAS rewrite of release() (updateAndGet needs API 24):
+        // unmatched releases stay clamped at zero, and the acquire/release cycle still works.
+        val policy = FrameDropPolicy(maxInFlight = 2)
+
+        policy.release()
+        policy.release()
+        assertEquals("unmatched release never goes negative", 0, policy.inFlightCount())
+
+        assertTrue(policy.tryAcquire())
+        assertTrue(policy.tryAcquire())
+        assertFalse("budget of two is full", policy.tryAcquire())
+        policy.release()
+        assertEquals(1, policy.inFlightCount())
+        assertTrue(policy.tryAcquire())
+        policy.release()
+        policy.release()
+        policy.release() // one extra — still clamped
+        assertEquals(0, policy.inFlightCount())
+    }
+
+    @Test
     fun frameRateLimiterSpacesFramesToTargetFps() {
         val limiter = FrameRateLimiter(targetFps = 10) // 100ms spacing
         assertTrue(limiter.shouldProcess(0))

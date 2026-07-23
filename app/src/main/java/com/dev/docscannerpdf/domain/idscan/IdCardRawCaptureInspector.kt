@@ -2,9 +2,9 @@ package com.dev.docscannerpdf.domain.idscan
 
 import android.content.Context
 import android.graphics.BitmapFactory
-import android.media.ExifInterface
 import android.net.Uri
 import android.util.Log
+import androidx.exifinterface.media.ExifInterface
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -56,10 +56,15 @@ object IdCardRawCaptureInspector {
             return@withContext null
         }
 
+        // AndroidX ExifInterface: its InputStream constructor works on every supported API
+        // (the platform android.media.ExifInterface stream ctor needs API 24), so a content://
+        // capture reads its real orientation on the API 23 floor. CameraX captures here are
+        // always file:// uris; the stream branch keeps parity with imported content URIs.
         val exifOrientation = runCatching {
-            when (rawUri.scheme) {
-                "file", null, "" -> rawUri.path?.let { ExifInterface(it) }
-                else -> context.contentResolver.openInputStream(rawUri)?.use { ExifInterface(it) }
+            val scheme = rawUri.scheme?.lowercase()
+            when {
+                scheme.isNullOrEmpty() || scheme == "file" -> rawUri.path?.let(::ExifInterface)
+                else -> context.contentResolver.openInputStream(rawUri)?.use(::ExifInterface)
             }?.getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL)
         }.getOrNull() ?: ExifInterface.ORIENTATION_NORMAL
         val sizeBytes = runCatching { rawUri.path?.let { File(it).length() } }.getOrNull() ?: 0L

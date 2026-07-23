@@ -7,8 +7,8 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Matrix
 import android.graphics.Paint
-import android.media.ExifInterface
 import android.net.Uri
+import androidx.exifinterface.media.ExifInterface
 import com.dev.docscannerpdf.domain.crop.PerspectiveGeometry
 import com.dev.docscannerpdf.domain.filter.DocumentFilterPrimitives
 import com.dev.docscannerpdf.domain.crop.PerspectiveTransformEngine
@@ -120,9 +120,14 @@ object IdScanPostProcessor {
      * [ExifOrientationDegrees] to a clockwise rotation in degrees.
      */
     fun rotationDegreesFromExif(context: Context, uri: Uri): Int = runCatching {
-        val exif = when (uri.scheme?.lowercase()) {
-            "file" -> uri.path?.let { ExifInterface(it) }
-            else -> context.contentResolver.openInputStream(uri)?.use { ExifInterface(it) }
+        // AndroidX ExifInterface: the InputStream constructor works on every supported API
+        // (unlike the platform android.media.ExifInterface, whose stream ctor needs API 24),
+        // so content:// imports (Gallery/document providers) read their real orientation on the
+        // API 23 floor instead of silently defaulting to "no rotation".
+        val scheme = uri.scheme?.lowercase()
+        val exif = when {
+            scheme.isNullOrEmpty() || scheme == "file" -> uri.path?.let(::ExifInterface)
+            else -> context.contentResolver.openInputStream(uri)?.use(::ExifInterface)
         }
         val tag = exif?.getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL)
             ?: ExifInterface.ORIENTATION_NORMAL
