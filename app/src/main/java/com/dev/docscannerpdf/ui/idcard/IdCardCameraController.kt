@@ -37,8 +37,16 @@ import java.io.File
  */
 class IdCardCameraController(
     private val context: Context,
-    private val lifecycleOwner: LifecycleOwner
+    private val lifecycleOwner: LifecycleOwner,
+    val owner: CameraSurfaceOwner
 ) {
+    /**
+     * Stable, process-unique id for THIS controller instance, greppable across its whole
+     * lifecycle (created → bind → released). A monotonic counter — not an identity hash — so two
+     * concurrently live controllers can never collide in the evidence.
+     */
+    val controllerId: String = "c${NEXT_CONTROLLER_ID.incrementAndGet()}"
+
     private val mainExecutor = ContextCompat.getMainExecutor(context)
     private var cameraProvider: ProcessCameraProvider? = null
     private var imageCapture: ImageCapture? = null
@@ -81,7 +89,7 @@ class IdCardCameraController(
 
     init {
         if (BuildConfig.DEBUG) {
-            Log.d(TAG, "ID_CARD_CAPTURE_CONTROLLER created=${System.identityHashCode(this)}")
+            Log.d(TAG, CameraOwnershipLog.created(owner, controllerId))
         }
     }
 
@@ -129,7 +137,7 @@ class IdCardCameraController(
         boundPreviewView = previewView
         bindInFlight = true
         if (BuildConfig.DEBUG) {
-            Log.d(TAG, "ID_CARD_CAPTURE_BIND reason=$reason")
+            Log.d(TAG, CameraOwnershipLog.bind(owner, reason, controllerId))
         }
         val future = ProcessCameraProvider.getInstance(context)
         future.addListener({
@@ -306,11 +314,14 @@ class IdCardCameraController(
         imageCapture = null
         boundPreviewView = null
         if (BuildConfig.DEBUG) {
-            Log.d(TAG, "ID_CARD_CAPTURE_CONTROLLER released=${System.identityHashCode(this)}")
+            Log.d(TAG, CameraOwnershipLog.released(owner, controllerId))
         }
     }
 
     private companion object {
         const val TAG = "IdCardCameraController"
+
+        /** Per-process source of stable, unique [controllerId] values. */
+        private val NEXT_CONTROLLER_ID = java.util.concurrent.atomic.AtomicInteger(0)
     }
 }

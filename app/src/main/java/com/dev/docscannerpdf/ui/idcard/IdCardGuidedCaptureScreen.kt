@@ -167,7 +167,11 @@ fun IdCardGuidedCaptureScreen(
     // recomposition (no reset to CHECKING).
     var uhdSupportState by remember { mutableStateOf(UhdSupportState.CHECKING) }
     val controller = remember {
-        IdCardCameraController(context = context, lifecycleOwner = lifecycleOwner).also { created ->
+        IdCardCameraController(
+            context = context,
+            lifecycleOwner = lifecycleOwner,
+            owner = CameraSurfaceOwner.ID_CARD_GUIDED_CAPTURE
+        ).also { created ->
             created.onSupportStateChanged = { state -> uhdSupportState = state }
         }
     }

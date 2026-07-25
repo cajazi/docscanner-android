@@ -961,6 +961,17 @@ class ScannerViewModel(
         _uiState.update { it.copy(errorMessage = message) }
     }
 
+    /**
+     * Shows a NEUTRAL transient user message (a plain Snackbar, not an error). The app's single
+     * transient-message channel is [ScannerUiState.errorMessage], which the dashboard renders as
+     * an un-styled Snackbar and already uses for non-error notices (e.g. "Image import
+     * canceled"). This alias lets success confirmations like "Passport saved" use that channel
+     * without misrepresenting them as errors at the call site.
+     */
+    fun showUserMessage(message: String) {
+        _uiState.update { it.copy(errorMessage = message) }
+    }
+
     fun markInterstitialConsumed() {
         _uiState.update { it.copy(shouldShowInterstitial = false) }
     }

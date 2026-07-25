@@ -11,6 +11,8 @@ enum class AppSurface {
     APP_LOCK,
     ONBOARDING,
     ID_CARD_CAPTURE,
+    PASSPORT_CAPTURE,
+    PASSPORT_REVIEW,
     ID_CARD_REVIEW,
     OTHER
 }
@@ -29,11 +31,15 @@ fun resolveAppSurface(
     appLockActive: Boolean,
     showOnboarding: Boolean,
     showIdCardGuidedCapture: Boolean,
+    showPassportCapture: Boolean,
+    passportReviewOpen: Boolean,
     idCardReviewOpen: Boolean
 ): AppSurface = when {
     appLockActive -> AppSurface.APP_LOCK
     showOnboarding -> AppSurface.ONBOARDING
     showIdCardGuidedCapture -> AppSurface.ID_CARD_CAPTURE
+    showPassportCapture -> AppSurface.PASSPORT_CAPTURE
+    passportReviewOpen -> AppSurface.PASSPORT_REVIEW
     idCardReviewOpen -> AppSurface.ID_CARD_REVIEW
     else -> AppSurface.OTHER
 }

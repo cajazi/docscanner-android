@@ -43,6 +43,9 @@ internal fun MainActivity.currentScreen(): MainScreen {
         showPdfTools -> MainScreen.PdfTools
         showLiveScanner -> MainScreen.LiveScanner
         showIdCardGuidedCapture -> MainScreen.IdCardGuidedCapture
+        showPassportCapture -> MainScreen.PassportGuidedCapture
+        passportCropRect != null -> MainScreen.PassportReview
+        passportReview != null -> MainScreen.PassportReview
         idCardCropState != null -> MainScreen.IdCardCropEditor
         idCardReview != null -> MainScreen.IdCardReview
         cropState != null -> MainScreen.CropEditor
@@ -87,6 +90,12 @@ internal fun MainActivity.handleSystemBack() {
         showCompressPdf -> closeCompressPdf()
         showLiveScanner -> showLiveScanner = false
         showIdCardGuidedCapture -> showIdCardGuidedCapture = false
+        showPassportCapture -> showPassportCapture = false
+        passportCropRect != null -> cancelPassportCropEditor()
+        // A passport save is an IMMUTABLE transaction: while it runs, system/predictive Back is
+        // consumed as a no-op so the review can neither be left nor cancelled mid-save.
+        passportReview?.saveInProgress == true -> Unit
+        passportReview != null -> cancelPassportReview()
         // The ID-card crop editor sits on top of the ID-card review step; back cancels it first.
         idCardCropState != null -> cancelIdCardCropEditor()
         idCardReview != null -> cancelIdCardReview()
