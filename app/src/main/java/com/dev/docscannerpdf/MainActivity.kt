@@ -113,6 +113,27 @@ import com.dev.docscannerpdf.domain.idscan.IdCardReviewState
 import com.dev.docscannerpdf.domain.idscan.IdCardSaveCoordinator
 import com.dev.docscannerpdf.domain.idscan.IdCardSideSavePlan
 import com.dev.docscannerpdf.domain.idscan.IdScanPostProcessor
+import com.dev.docscannerpdf.domain.idscan.PassportCompletion
+import com.dev.docscannerpdf.domain.idscan.PassportCropHandle
+import com.dev.docscannerpdf.domain.idscan.PassportCropRect
+import com.dev.docscannerpdf.domain.idscan.PassportCropReducer
+import com.dev.docscannerpdf.domain.idscan.PassportCropRenderer
+import com.dev.docscannerpdf.domain.idscan.PassportCropRotationMapping
+import com.dev.docscannerpdf.domain.idscan.PassportFileOwnership
+import com.dev.docscannerpdf.domain.idscan.PassportCompletionDestination
+import com.dev.docscannerpdf.domain.idscan.PassportEffectChain
+import com.dev.docscannerpdf.domain.idscan.PassportFilterGrid
+import com.dev.docscannerpdf.domain.idscan.PassportPreviewBus
+import com.dev.docscannerpdf.domain.idscan.PassportPreviewDecoder
+import com.dev.docscannerpdf.domain.idscan.PassportPreviewFrame
+import com.dev.docscannerpdf.domain.idscan.PassportPreviewOperation
+import com.dev.docscannerpdf.domain.idscan.PassportPreviewRenderer
+import com.dev.docscannerpdf.domain.idscan.PassportReviewFlow
+import com.dev.docscannerpdf.domain.idscan.PassportReviewSession
+import com.dev.docscannerpdf.domain.idscan.PassportReviewState
+import com.dev.docscannerpdf.domain.idscan.PassportTimingLog
+import com.dev.docscannerpdf.domain.idscan.PassportFailureStage
+import com.dev.docscannerpdf.domain.idscan.PassportWatermarkRenderer
 import com.dev.docscannerpdf.ui.crop.CropImageProcessor
 import com.dev.docscannerpdf.ui.detection.LumaFrameFactory
 import com.dev.docscannerpdf.ui.DocScannerApp
@@ -178,6 +199,7 @@ import java.util.Locale
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
@@ -1247,10 +1269,986 @@ class MainActivity : FragmentActivity() {
     internal val idCardCaptureDirectory: File
         get() = File(filesDir, "id_card_guided_capture")
 
+    /** Directory captured passport pages are written to — private app storage, never external. */
+    internal val passportCaptureDirectory: File
+        get() = File(filesDir, "passport_guided_capture")
+
+    /** Whether the single-page passport guided camera is showing (distinct from ID-card capture). */
+    internal var showPassportCapture by mutableStateOf(false)
+
     /** Opens the guided ID-card camera screen in place of the ML Kit document scanner. */
     internal fun startIdCardGuidedCapture(titlePrefix: String) {
         pendingIdCardCaptureTitlePrefix = titlePrefix
         showIdCardGuidedCapture = true
+    }
+
+    /** Opens the guided single-page passport camera (its own flow, never the ID-card Front/Back one). */
+    internal fun startPassportCapture() {
+        showIdCardFlow = false
+        showPassportCapture = true
+    }
+
+    /** The dedicated single-page passport review (never the generic Document Ready screen). */
+    internal var passportReview by mutableStateOf<PassportReviewState?>(null)
+
+    /**
+     * The in-memory preview cache for the current passport review visit — owns the downscaled
+     * base bitmap, the current preview bitmap, and the two monotonic generation tokens used
+     * to drop stale completions. Reset on every [beginPassportReview] and [passportCropApply]
+     * (which installs a new base). The [PassportPreviewBus] is the publisher the Compose layer
+     * collects.
+     */
+    private val passportPreviewSession = PassportReviewSession()
+    private val passportPreviewBus = PassportPreviewBus()
+    /** Job running the in-memory preview render for the LATEST user action. */
+    private var passportPreviewJob: Job? = null
+    /** Job decoding the LATEST settled authoritative frame — cancelled when the review ends. */
+    private var passportFinalFrameJob: Job? = null
+
+    /** The frame stream the passport review screen draws — instant previews and settled finals. */
+    internal val passportPreviewFrames: StateFlow<PassportPreviewFrame?>
+        get() = passportPreviewBus.frame
+
+    /**
+     * Per-filter thumbnails for the filter panel's 4-column grid, all generated in memory from
+     * ONE cached small thumbnail of the current passport base page (never a JPEG write, never a
+     * per-filter full-resolution decode). Regenerated when the base changes (review open, crop
+     * settle) and cleared when the review ends.
+     */
+    internal var passportFilterThumbnails by mutableStateOf<Map<DocumentFilter, Bitmap>>(emptyMap())
+    private var passportThumbnailJob: Job? = null
+
+    /**
+     * The normalized crop rectangle whose authoritative full-resolution render is still in
+     * flight. While set, every in-memory preview composes this crop first (against the OLD
+     * downscaled base) so the review shows the cropped page instantly; cleared when the settled
+     * cropped base is installed (or the crop fails).
+     */
+    private var passportPendingPreviewCrop: PassportCropRect? = null
+
+    /** Start time of the latest editing operation — for the debug-only timing logs. */
+    private var passportLastOpStartedAt = 0L
+
+    /**
+     * Publishes an INSTANT in-memory preview for the current requested effect chain: crop (when
+     * one is pending), rotation, filter, watermark — composed IN THAT ORDER from the cached
+     * downscaled base on [Dispatchers.Default], never from a JPEG write. Latest generation wins:
+     * a superseded compose is cancelled/dropped and its bitmap simply released to the GC (never
+     * recycled while Compose may still draw it).
+     */
+    private fun startPassportPreviewRender(operation: PassportPreviewOperation) {
+        val state = passportReview ?: return
+        val chain = PassportEffectChain(
+            crop = passportPendingPreviewCrop ?: PassportCropRect.FULL,
+            rotationQuarterTurns = PassportEffectChain.quarterTurns(state.requestedRotationDegrees),
+            filter = state.selectedFilter,
+            watermarkText = state.watermarkText
+        )
+        passportPreviewSession.updateRequestedChain(chain)
+        val generation = passportPreviewSession.beginPreview()
+        PassportTimingLog.started(operation, generation)
+        val startedAt = android.os.SystemClock.elapsedRealtime()
+        passportLastOpStartedAt = startedAt
+        passportPreviewJob?.cancel()
+        passportPreviewJob = lifecycleScope.launch {
+            try {
+                val base = ensurePassportPreviewBase()
+                if (base == null) {
+                    PassportTimingLog.failed(
+                        operation, generation, PassportFailureStage.PREVIEW,
+                        android.os.SystemClock.elapsedRealtime() - startedAt
+                    )
+                    return@launch
+                }
+                val preview = PassportPreviewRenderer.compose(base, chain)
+                // A newer operation superseded this preview — never publish it. Ownership of the
+                // orphaned bitmap passes to the GC.
+                if (!passportPreviewSession.isPreviewCurrent(generation)) return@launch
+                passportPreviewSession.storePreview(preview)
+                passportPreviewBus.publishPreview(passportPreviewSession, generation, operation, preview)
+                PassportTimingLog.previewReady(
+                    operation, generation,
+                    android.os.SystemClock.elapsedRealtime() - startedAt,
+                    preview.width, preview.height
+                )
+            } catch (cancellation: CancellationException) {
+                throw cancellation
+            } catch (throwable: Throwable) {
+                PassportTimingLog.failed(
+                    operation, generation, PassportFailureStage.PREVIEW,
+                    android.os.SystemClock.elapsedRealtime() - startedAt
+                )
+            }
+        }
+    }
+
+    /**
+     * Returns the cached downscaled base for the current base generation, decoding it from the
+     * authoritative base URI EXACTLY ONCE per generation (bounds-first, OOM-safe, on
+     * [Dispatchers.IO]). Returns null if the base changed mid-decode (a crop settled) or the
+     * decode failed.
+     */
+    private suspend fun ensurePassportPreviewBase(): Bitmap? {
+        passportPreviewSession.downscaledBase?.let { return it }
+        val baseUri = passportReview?.baseUri ?: return null
+        val baseGeneration = passportPreviewSession.baseGeneration
+        val decoded = PassportPreviewDecoder.decodeDownscaled(this, Uri.parse(baseUri)) ?: return null
+        if (passportPreviewSession.baseGeneration != baseGeneration) return null
+        passportPreviewSession.storeDownscaledBase(decoded)
+        return decoded
+    }
+
+    /**
+     * Once ALL authoritative work has settled (no filter/rotation/watermark render in flight, no
+     * crop pending), decodes the settled [PassportReviewState.displayedUri] — the EXACT file
+     * Confirm will save — and atomically replaces the in-memory preview with those final pixels.
+     * Gated on the REVIEW SESSION plus both the final generation token and the preview generation,
+     * so a stale final can never cover a newer instant preview — and a decode still in flight when
+     * the user leaves can never publish the previous visit's page into a brand-new review.
+     */
+    private fun maybePublishPassportFinalFrame(operation: PassportPreviewOperation) {
+        val state = passportReview ?: return
+        if (state.workInFlight || state.saveInProgress) return
+        val displayedUri = state.displayedUri
+        val generation = passportPreviewSession.beginFinal()
+        val previewGenerationAtStart = passportPreviewSession.previewGeneration
+        val startedAt = passportLastOpStartedAt
+        // The visit this decode belongs to: a cancel / new review / success bumps it, and the
+        // generation tokens alone would not (they are not reset per visit).
+        val session = passportReviewSession
+        passportFinalFrameJob?.cancel()
+        passportFinalFrameJob = lifecycleScope.launch {
+            val bitmap = PassportPreviewDecoder.decodeDownscaled(this@MainActivity, Uri.parse(displayedUri))
+            if (bitmap == null) {
+                PassportTimingLog.failed(
+                    operation, generation, PassportFailureStage.FINAL,
+                    android.os.SystemClock.elapsedRealtime() - startedAt
+                )
+                return@launch
+            }
+            // The review visit these pixels were decoded for is over (or was replaced) — publishing
+            // now would paint an abandoned session's page onto the current one.
+            if (passportReviewSession != session || passportReview == null) return@launch
+            if (!passportPreviewSession.isFinalCurrent(generation)) return@launch
+            if (passportPreviewSession.previewGeneration != previewGenerationAtStart) return@launch
+            passportPreviewBus.publishFinal(passportPreviewSession, generation, operation, bitmap)
+            PassportTimingLog.finalReady(
+                operation, generation,
+                android.os.SystemClock.elapsedRealtime() - startedAt,
+                bitmap.width, bitmap.height
+            )
+        }
+    }
+
+    /**
+     * Rebuilds the filter-panel thumbnails from the CURRENT base page: one small thumbnail
+     * decode shared by every filter, each effect applied in memory on [Dispatchers.Default].
+     * No JPEG is written and the full-resolution source is never decoded per filter.
+     */
+    private fun regeneratePassportFilterThumbnails() {
+        val baseUri = passportReview?.baseUri ?: return
+        passportThumbnailJob?.cancel()
+        passportThumbnailJob = lifecycleScope.launch {
+            val source = PassportPreviewDecoder.decodeThumbnail(this@MainActivity, Uri.parse(baseUri))
+                ?: return@launch
+            val thumbnails = withContext(Dispatchers.Default) {
+                PassportFilterGrid.ORDER.associateWith { filter ->
+                    PassportPreviewRenderer.applyFilterInMemory(source, filter)
+                }
+            }
+            passportFilterThumbnails = thumbnails
+        }
+    }
+
+    /**
+     * Tears down the in-memory preview pipeline when a review visit ends (cancel or successful
+     * save): cancels preview/thumbnail work, clears the bus so the screen stops drawing, and
+     * releases every cached bitmap to the GC. Bitmaps are never recycled here — Compose may
+     * still reference the last frame during the exit transition.
+     */
+    private fun clearPassportPreviewPipeline() {
+        passportPreviewJob?.cancel()
+        passportPreviewJob = null
+        passportFinalFrameJob?.cancel()
+        passportFinalFrameJob = null
+        passportThumbnailJob?.cancel()
+        passportThumbnailJob = null
+        passportPendingPreviewCrop = null
+        passportPreviewBus.clear()
+        passportPreviewSession.clear()
+        passportFilterThumbnails = emptyMap()
+    }
+
+    private var passportFilterGeneration = 0L
+    private var passportFilterJob: Job? = null
+
+    /**
+     * Stable identifier for the CURRENT passport review visit. It is bumped whenever a review is
+     * opened ([beginPassportReview]) or torn down ([cancelPassportReview]/success), so a save
+     * coroutine that started in one visit can detect — via [isPassportSaveCurrent] — that its
+     * result now belongs to an abandoned session and refuse to mutate state or navigate. Combined
+     * with [passportSaveGeneration] (bumped per Confirm) it makes Confirm/save an immutable
+     * transaction: only the save that both the active session and the latest generation own may
+     * complete.
+     */
+    private var passportReviewSession = 0L
+    private var passportSaveGeneration = 0L
+    private var passportSaveJob: Job? = null
+
+    /**
+     * Running ledger of every app-owned JPEG the CURRENT review visit has published into its state
+     * — the canonical base, each settled filter/rotation/watermark render and each cropped base.
+     * Superseded entries are deleted eagerly by [publishPassportReview]; the ledger is the backstop
+     * that lets cancel/post-save cleanup delete anything that was dropped EARLIER in the visit and
+     * is therefore no longer reachable from the final state. Only ever touched on the main thread.
+     */
+    private val passportOwnedUris = mutableSetOf<String>()
+
+    /**
+     * The exact URI a Confirm in progress froze as its final pixels. Never deletable while set —
+     * ownership of that file is transferring to the saved document, so no superseding transition
+     * and no session cleanup may remove it out from under the persist.
+     */
+    private var passportSaveFrozenUri: String? = null
+
+    /**
+     * Publishes [after] as the live passport review state and deletes the app-owned temp files
+     * [before] referenced that [after] no longer does.
+     *
+     * This is the single place the review's file lifecycle is enforced, because the reducer
+     * ([PassportReviewFlow]) is deliberately framework-free: transitions such as a rotation back to
+     * 0° or the watermark invalidation every upstream change performs simply DROP a URI from the
+     * state. Capturing [before] here — before the assignment — is what makes those drops
+     * recoverable instead of orphaning a file.
+     *
+     * Deletion happens only AFTER the new state is live, never touches a URI [after] still
+     * references, and never touches [passportSaveFrozenUri]. The actual unlink runs on
+     * [Dispatchers.IO] behind [deletePassportOwnedFile], so no file I/O blocks the main thread, and
+     * a failed delete leaves the user's valid document completely untouched.
+     */
+    private fun publishPassportReview(before: PassportReviewState?, after: PassportReviewState?) {
+        passportReview = after
+        passportOwnedUris += PassportFileOwnership.referencedUris(after)
+        val superseded = PassportFileOwnership.supersededUris(
+            before = before,
+            after = after,
+            protectedUris = setOfNotNull(passportSaveFrozenUri)
+        )
+        if (superseded.isEmpty()) return
+        lifecycleScope.launch { superseded.forEach { deletePassportOwnedFile(it) } }
+    }
+
+    /**
+     * [publishPassportReview] for a freshly rendered file: if the reducer REJECTED the render
+     * (returning [before] unchanged because a newer selection has since won), [renderedUri] is
+     * referenced by nothing and is deleted, so a stale job can never leave its own output behind.
+     */
+    private fun publishPassportRender(
+        before: PassportReviewState,
+        after: PassportReviewState,
+        renderedUri: String
+    ) {
+        publishPassportReview(before, after)
+        if (renderedUri in PassportFileOwnership.referencedUris(after)) return
+        lifecycleScope.launch { deletePassportOwnedFile(renderedUri) }
+    }
+
+    /**
+     * Called once the guided passport capture screen has its single baked page. Opens the
+     * DEDICATED passport review — no generic Document Ready flags are set, so no backend
+     * processing / E2E validation / To Word surface can appear in the passport path. The baked
+     * page is already canonical upright portrait, so the review starts at rotation 0.
+     */
+    internal fun beginPassportReview(pageUri: Uri) {
+        showPassportCapture = false
+        val title = "Passport " +
+            SimpleDateFormat("dd-MM-yyyy HH.mm", Locale.getDefault()).format(Date())
+        imageImportReview = null
+        pendingImageImport = null
+        imageEditorMessage = null
+        scannerBackendProcessingState = ScannerBackendProcessingState.Idle
+        scannerFlowValidationState = ScannerFlowValidationState()
+        documentResultState = null
+        importedImagePreview = null
+        // A brand-new review visit: bump the session so any straggling save from a previous
+        // visit can never mutate or navigate this one.
+        passportReviewSession++
+        passportSaveJob?.cancel()
+        passportSaveJob = null
+        passportRotationJob?.cancel()
+        passportRotationJob = null
+        // Fresh preview pipeline for this visit: new base generation, empty bus, no thumbnails.
+        clearPassportPreviewPipeline()
+        passportPreviewSession.installBase()
+        passportPreviewSession.updateRequestedChain(PassportEffectChain())
+        // A visit REPLACED without an explicit cancel (a second capture straight into review) must
+        // not strand the previous visit's temp files: sweep its ledger before adopting a new one.
+        // Anything a save froze is retained — that file now belongs to the persisted document.
+        sweepPassportSession(previousState = passportReview, retainUris = setOfNotNull(passportSaveFrozenUri))
+        // The previous visit's freeze (if any) has just been honoured by the sweep above; a new
+        // visit starts with no save in flight.
+        passportSaveFrozenUri = null
+        passportReview = PassportReviewState(baseUri = pageUri.toString(), title = title)
+        passportOwnedUris += pageUri.toString()
+        // Warm the downscaled preview base and the filter-grid thumbnails in the background so
+        // the FIRST editing tap already composes from memory within the instant-feedback budget.
+        lifecycleScope.launch { ensurePassportPreviewBase() }
+        regeneratePassportFilterThumbnails()
+    }
+
+    /**
+     * Whether a save coroutine started for ([session], [generation]) still owns the passport
+     * review: the same visit is active, no newer Confirm superseded it, and a review is still
+     * open. A stale save (the user cancelled, opened a new review, or re-confirmed) fails this
+     * check and must do nothing but temporary-file cleanup.
+     */
+    private fun isPassportSaveCurrent(session: Long, generation: Long): Boolean =
+        passportReviewSession == session &&
+            passportSaveGeneration == generation &&
+            passportReview != null
+
+    /**
+     * Confirms the passport review: composes the EXACT pixels shown on screen (settled filter
+     * render → baked rotation → watermark), then saves ONE document through the existing
+     * repository so it appears in All Documents via the existing Room Flow. Single-flight, and
+     * the document is created only after the final pixels exist — a failed save leaves the user
+     * on the review with retry available and creates no record.
+     */
+    internal fun confirmPassportReview() {
+        val current = passportReview ?: return
+        // Single-flight: beginSave returns null if a save is already running, a render is in
+        // flight, or a requested watermark is unresolved — so repeated Confirm is a no-op.
+        val saving = PassportReviewFlow.beginSave(current) ?: return
+        passportReview = saving
+        passportFilterJob?.cancel()
+        passportWatermarkJob?.cancel()
+        // This save is owned by the current review session and this generation. Any later cancel,
+        // new review, or re-confirm invalidates it via isPassportSaveCurrent().
+        val session = passportReviewSession
+        val generation = ++passportSaveGeneration
+        // Save reuses the exact settled pixels the review is showing — canConfirm guaranteed
+        // everything (filter/rotation/watermark) settled, so no re-render happens here. Freezing it
+        // SYNCHRONOUSLY (before any suspension point) is what makes it undeletable for the whole
+        // persist: every cleanup path treats passportSaveFrozenUri as protected.
+        val finalUri = passportFinalUri(saving)
+        passportSaveFrozenUri = finalUri.toString()
+        logPassportRoute("PASSPORT_CONFIRM accepted")
+        passportSaveJob?.cancel()
+        passportSaveJob = lifecycleScope.launch {
+            logPassportRoute("PASSPORT_SAVE started")
+            // Defensive: if the user somehow left / re-confirmed, a stale result must not navigate.
+            if (!isPassportSaveCurrent(session, generation)) {
+                logPassportRoute("PASSPORT_SAVE dropped=stale_session")
+                return@launch
+            }
+            viewModel.saveGeneratedPdfDocument(
+                document = DocumentEntity(
+                    title = saving.title,
+                    timestamp = System.currentTimeMillis(),
+                    pageCount = 1,
+                    localPdfUri = finalUri.toString()
+                ),
+                onError = onError@{ message ->
+                    // Restore retry state only for the still-active save session.
+                    if (!isPassportSaveCurrent(session, generation)) return@onError
+                    // Nothing was persisted, so the freeze lifts — but the final image stays
+                    // referenced by the restored state, so it remains undeletable for the retry.
+                    passportSaveFrozenUri = null
+                    passportReview = PassportReviewFlow.saveFailed(saving)
+                    logPassportRoute("PASSPORT_SAVE failed reason=persist_error")
+                    logPassportRoute("PASSPORT_ROUTE retained=PASSPORT_REVIEW")
+                    viewModel.showError(message)
+                },
+                onSaved = onSaved@{ savedDocument ->
+                    // Navigate exactly once, and only if this session/generation still owns the
+                    // review. A stale success (session abandoned) leaves the already-persisted
+                    // document in the library but performs no navigation.
+                    if (!isPassportSaveCurrent(session, generation)) {
+                        logPassportRoute("PASSPORT_SAVE dropped=stale_session_post_persist")
+                        return@onSaved
+                    }
+                    // Snapshot the ledger BEFORE completePassportSave() tears the review down, so
+                    // files dropped earlier in the visit are still known to the sweep.
+                    val owned = passportOwnedUris.toSet()
+                    completePassportSave(savedDocument)
+                    // Ownership of the final image has transferred to the saved document. Delete
+                    // this session's raw/intermediate app-owned files off the main thread,
+                    // preserving ONLY the persisted final artifact (finalUri = the document's
+                    // localPdfUri, also the displayed URI). The freeze lifts only here, once that
+                    // file is both persisted and explicitly retained by the sweep.
+                    passportSaveFrozenUri = null
+                    passportOwnedUris.clear()
+                    lifecycleScope.launch {
+                        cleanupPassportSessionFiles(
+                            ownedUris = owned,
+                            state = saving,
+                            retainUris = setOf(finalUri.toString())
+                        )
+                    }
+                }
+            )
+        }
+    }
+
+    /**
+     * Post-save navigation for a passport — the DEDICATED clean destination, never the generic
+     * Document Ready / backend-processing / E2E / To Word preview. Clears the transient review
+     * state and opens the saved document in the clean viewer over the Documents list (or the
+     * list itself when no valid id). Explicitly does NOT touch [importedImagePreview] or any
+     * generic single-image/document-result flag.
+     */
+    private fun completePassportSave(savedDocument: DocumentEntity) {
+        logPassportRoute("PASSPORT_SAVE completed documentId=present")
+        // The save succeeded — release the preview cache and stop publishing frames.
+        clearPassportPreviewPipeline()
+        passportReview = null
+        logPassportRoute("PASSPORT_REVIEW cleared=true")
+        val destination = PassportCompletion.destinationFor(savedDocument.id)
+        when (destination) {
+            PassportCompletionDestination.SAVED_DOCUMENT -> {
+                showDocumentLibrary = true
+                pdfViewerDocument = savedDocument
+            }
+            PassportCompletionDestination.DOCUMENTS -> {
+                showDocumentLibrary = true
+            }
+        }
+        // Log the ACTUAL typed destination, never a hardcoded one.
+        logPassportRoute("PASSPORT_ROUTE from=PASSPORT_REVIEW to=$destination")
+        showPassportSavedMessage()
+    }
+
+    /**
+     * Surfaces the "Passport saved" confirmation. The app's shared UI-message channel is the
+     * ViewModel's snackbar/message state (also used by every other save path); this is a neutral
+     * success confirmation, not an error, and carries no image or document content.
+     */
+    private fun showPassportSavedMessage() {
+        viewModel.showUserMessage("Passport saved")
+    }
+
+    private fun logPassportRoute(message: String) {
+        if (BuildConfig.DEBUG) Log.d("IdCardCapture", message)
+    }
+
+    /**
+     * The passport's final saved pixels are EXACTLY the settled image the review is showing —
+     * [PassportReviewState.displayedUri] (the watermark render, the settled rotation bake, or the
+     * settled filtered page). Confirm is gated on [PassportReviewState.canConfirm], so by the time
+     * this runs the filter, rotation and watermark are all settled and [displayedUri] is a
+     * fully-baked page. Nothing is re-rendered here — no rotation is re-baked after Confirm — so
+     * the saved pixels equal the displayed pixels by construction.
+     */
+    private fun passportFinalUri(state: PassportReviewState): Uri = Uri.parse(state.displayedUri)
+
+    private suspend fun bakePassportRotation(source: Uri, degrees: Int): Uri? {
+        if (degrees == 0) return source
+        return try {
+            IdScanPostProcessor.rotateAndSave(
+                context = this@MainActivity,
+                sourceUri = source,
+                degrees = degrees,
+                outputDirectory = File(filesDir, "passport_rotated")
+            )
+        } catch (cancellation: CancellationException) {
+            throw cancellation
+        } catch (throwable: Throwable) {
+            Log.w(TAG, "Passport rotation bake failed: ${throwable.message}")
+            null
+        }
+    }
+
+    private var passportRotationGeneration = 0L
+    private var passportRotationJob: Job? = null
+
+    /**
+     * Bakes the requested rotation into a new image so the review can display it with
+     * ContentScale.Fit fully contained at 90°/270° (a rotated Fit of the un-rotated page clips).
+     * The PREVIOUS settled image stays on screen until this publishes. Runs only when a rotation is
+     * pending, the filter has settled, and no watermark render is baking rotation itself.
+     * Generation-token guarded; the superseded rotation temp is deleted once the new one lands.
+     */
+    private fun maybeRenderPassportRotation() {
+        val state = passportReview ?: return
+        // Wait for the filter to settle and skip when a watermark render handles rotation.
+        if (!state.rotationNeedsRender || state.renderPending || state.saveInProgress) return
+        val filteredUri = state.filteredUri
+        val rotation = state.requestedRotationDegrees
+        val generation = ++passportRotationGeneration
+        passportRotationJob?.cancel()
+        passportRotationJob = lifecycleScope.launch {
+            val rendered = bakePassportRotation(Uri.parse(filteredUri), rotation)
+            if (passportRotationGeneration != generation) {
+                deletePassportOwnedFile(rendered?.toString())
+                return@launch
+            }
+            val latest = passportReview ?: return@launch
+            if (rendered == null) {
+                passportReview = PassportReviewFlow.withRotationFailed(latest, rotation)
+                return@launch
+            }
+            // Publish, then delete whatever the previous state referenced and this one no longer
+            // does (the superseded bake) — or this render itself if the reducer rejected it.
+            publishPassportRender(
+                before = latest,
+                after = PassportReviewFlow.withRotationRendered(
+                    state = latest,
+                    fromFilteredUri = filteredUri,
+                    atRotation = rotation,
+                    renderedUri = rendered.toString()
+                ),
+                renderedUri = rendered.toString()
+            )
+            // The authoritative rotation settled — atomically replace the instant preview with
+            // the final pixels (skipped automatically while other work is still pending).
+            maybePublishPassportFinalFrame(PassportPreviewOperation.ROTATE)
+        }
+    }
+
+    private var passportWatermarkGeneration = 0L
+    private var passportWatermarkJob: Job? = null
+
+    /**
+     * After any passport state change, renders the authoritative watermark image when one is
+     * requested and its filter has settled — the SINGLE source of truth for both preview and
+     * save. Generation-token + reducer-input guarded (a stale render can't overwrite newer
+     * state), and the superseded temp file is deleted once a new one publishes.
+     */
+    private fun maybeRenderPassportWatermark() {
+        val state = passportReview ?: return
+        // Wait until the filter has settled — the watermark must sit on the final filtered page.
+        if (!state.watermarkNeedsRender || state.renderPending) return
+        val text = state.watermarkText ?: return
+        val filteredUri = state.filteredUri
+        val rotation = state.requestedRotationDegrees
+        val generation = ++passportWatermarkGeneration
+        passportWatermarkJob?.cancel()
+        passportWatermarkJob = lifecycleScope.launch {
+            val rendered = try {
+                val rotated = bakePassportRotation(Uri.parse(filteredUri), rotation) ?: return@launch
+                val result = PassportWatermarkRenderer.apply(
+                    context = this@MainActivity,
+                    sourceUri = rotated,
+                    text = text,
+                    outputDirectory = File(filesDir, "passport_watermarked"),
+                    generation = generation
+                )
+                // The rotated intermediate (only created when rotation != 0, so distinct from the
+                // filtered page) has been consumed by the watermark render — delete the orphan.
+                if (rotated.toString() != filteredUri) deletePassportOwnedFile(rotated.toString())
+                result
+            } catch (cancellation: CancellationException) {
+                throw cancellation
+            } catch (throwable: Throwable) {
+                Log.w(TAG, "Passport watermark render failed: ${throwable.message}")
+                null
+            }
+            if (passportWatermarkGeneration != generation) {
+                // A newer watermark/filter/rotation superseded this render — delete the orphan.
+                deletePassportOwnedFile(rendered?.toString())
+                return@launch
+            }
+            val latest = passportReview ?: return@launch
+            if (rendered == null) {
+                passportReview = PassportReviewFlow.withWatermarkFailed(latest, text)
+                viewModel.showError("Unable to apply the watermark. Please try again.")
+                return@launch
+            }
+            // Publish, then delete the now-superseded watermark temp off the main thread (never the
+            // freshly published one, never a file the new state still references) — or this render
+            // itself if the reducer rejected it as stale.
+            publishPassportRender(
+                before = latest,
+                after = PassportReviewFlow.withWatermarkRendered(
+                    state = latest,
+                    forText = text,
+                    fromFilteredUri = filteredUri,
+                    atRotation = rotation,
+                    renderedUri = rendered.toString()
+                ),
+                renderedUri = rendered.toString()
+            )
+            // The authoritative watermark settled — swap the instant preview for the exact
+            // pixels Confirm will save.
+            maybePublishPassportFinalFrame(PassportPreviewOperation.WATERMARK)
+        }
+    }
+
+    // Interactive RECTANGULAR passport crop editor — its own normalized-rect state, entirely
+    // separate from the ID-card perspective crop so neither can disturb the other.
+    internal var passportCropRect by mutableStateOf<PassportCropRect?>(null)
+    internal var passportCropSourceBitmap by mutableStateOf<android.graphics.Bitmap?>(null)
+    internal var passportCropApplying by mutableStateOf(false)
+    private var passportCropGeneration = 0L
+
+    /**
+     * The clockwise quarter turns baked into the image the crop editor is CURRENTLY showing,
+     * snapshotted in the same statement that chose that image so the two can never drift apart.
+     * The editor draws its rectangle in THAT frame; [passportCropApply] un-rotates by exactly this
+     * many turns to get back to canonical base coordinates.
+     */
+    private var passportCropDisplayQuarterTurns = 0
+
+    /**
+     * Opens the rectangular crop editor on the image the review is CURRENTLY showing
+     * ([PassportReviewState.displayedUri] — filter, baked rotation and watermark included), so the
+     * rectangle the user drags always corresponds to the pixels in front of them. Crop TRUTH stays
+     * canonical: the rectangle is un-rotated back into base coordinates on Apply and the
+     * authoritative crop is still extracted from the full-resolution [PassportReviewState.baseUri],
+     * so the filter and rotation are re-rendered from the cropped base rather than applied twice.
+     * Starts full-frame.
+     */
+    internal fun openPassportCropEditor() {
+        // While a previous crop is still settling into its new base, opening the editor would
+        // show the OLD base — wait for the settle instead (the toolbar disables Crop meanwhile).
+        if (passportReview?.cropRenderPending == true) return
+        val state = passportReview
+        val source = state?.displayedUri
+        if (state == null || source.isNullOrBlank()) {
+            viewModel.showError("No image is available to crop.")
+            return
+        }
+        passportCropSourceBitmap = null
+        passportCropApplying = false
+        // Snapshot the displayed frame's rotation alongside the URI being loaded. Both are read
+        // from the same state, and neither the base nor this snapshot can change while the editor
+        // is open (Crop is entered from the review and blocks re-entry while a crop is pending), so
+        // a rotation bake landing mid-edit cannot invalidate the mapping.
+        passportCropDisplayQuarterTurns =
+            PassportEffectChain.quarterTurns(state.displayedRotationDegrees)
+        passportCropRect = PassportCropRect.FULL
+        lifecycleScope.launch {
+            val bitmap = cropImageProcessor.loadSource(source)
+            if (bitmap == null) {
+                passportCropRect = null
+                viewModel.showError("Unable to load the image for cropping.")
+                return@launch
+            }
+            // Only adopt if the editor is still open (the user may have cancelled while decoding).
+            if (passportCropRect != null) passportCropSourceBitmap = bitmap
+        }
+    }
+
+    /** Cancel returns to the review with the base, filter, rotation and watermark unchanged. */
+    internal fun cancelPassportCropEditor() {
+        passportCropRect = null
+        passportCropSourceBitmap = null
+        passportCropApplying = false
+    }
+
+    internal fun passportCropMoveHandle(handle: PassportCropHandle, nx: Float, ny: Float) {
+        if (passportCropApplying) return
+        passportCropRect = passportCropRect?.let { PassportCropReducer.moveHandle(it, handle, nx, ny) }
+    }
+
+    internal fun passportCropMoveBy(dnx: Float, dny: Float) {
+        if (passportCropApplying) return
+        passportCropRect = passportCropRect?.let { PassportCropReducer.moveBy(it, dnx, dny) }
+    }
+
+    internal fun passportCropReset() {
+        if (passportCropApplying) return
+        passportCropRect = passportCropRect?.let { PassportCropReducer.reset() }
+    }
+
+    /**
+     * Applies the crop with INSTANT feedback: the review returns immediately showing an
+     * in-memory preview of the cropped page (composed from the cached downscaled base, no JPEG
+     * write, no spinner) while the authoritative FULL-resolution crop renders in the background
+     * from the original base using the same normalized rectangle. Confirm stays disabled (via
+     * [PassportReviewState.cropRenderPending]) until the settled cropped base is installed, the
+     * preview cache is rebuilt from it, and the active filter/rotation/watermark re-render in
+     * canonical order — so the downscaled preview crop can never be persisted. Generation-guarded
+     * (a superseded/cancelled apply publishes nothing and deletes its orphan). A no-op crop
+     * closes without generating a duplicate file.
+     */
+    internal fun passportCropApply() {
+        val displayRect = passportCropRect ?: return
+        val state = passportReview ?: return
+        if (state.cropRenderPending) return
+        if (!PassportCropReducer.isMeaningfulCrop(displayRect)) {
+            // Unchanged crop → treat as a no-op; never write an identical file.
+            cancelPassportCropEditor()
+            return
+        }
+        // The rectangle was drawn on the DISPLAYED page, whose rotation is baked into its pixels.
+        // Un-rotate it by the snapshotted quarter turns to address the canonical base — an exact
+        // lossless permutation of the unit square, so the in-bounds and minimum-size invariants
+        // survive it. Both the instant in-memory preview (which crops the downscaled base BEFORE
+        // rotating) and the authoritative renderer consume base coordinates.
+        val rect = PassportCropRotationMapping.toBaseRect(displayRect, passportCropDisplayQuarterTurns)
+        val source = state.baseUri
+        // Close the crop editor NOW and show the instant in-memory cropped preview in the review.
+        passportCropRect = null
+        passportCropSourceBitmap = null
+        passportCropApplying = false
+        passportPendingPreviewCrop = rect
+        passportReview = PassportReviewFlow.beginCrop(state)
+        startPassportPreviewRender(PassportPreviewOperation.CROP)
+        val generation = ++passportCropGeneration
+        lifecycleScope.launch {
+            val croppedUri = PassportCropRenderer.crop(
+                context = this@MainActivity,
+                sourceUri = Uri.parse(source),
+                crop = rect,
+                outputDirectory = File(filesDir, "passport_cropped")
+            )
+            // A newer crop or a cancel superseded this attempt — publish nothing, delete the orphan.
+            if (passportCropGeneration != generation) {
+                deletePassportOwnedFile(croppedUri?.toString())
+                return@launch
+            }
+            if (croppedUri == null) {
+                // Revert the instant preview to the un-cropped page — the truthful settled state.
+                passportPendingPreviewCrop = null
+                passportReview = passportReview?.let { PassportReviewFlow.cropFailed(it) }
+                startPassportPreviewRender(PassportPreviewOperation.CROP)
+                viewModel.showError("Unable to apply crop.")
+                return@launch
+            }
+            // Publish the cropped page as the new base; downstream selections re-render from it,
+            // and the preview cache rebuilds from the NEW full-resolution base (decoded once).
+            // Publishing through publishPassportRender deletes exactly what the new state stopped
+            // referencing — the superseded base, the superseded filter render, and the watermark
+            // render withCroppedBase invalidates. The previously settled ROTATION bake is retained
+            // by the reducer for keep-last display and is cleaned when its re-bake publishes.
+            val latest = passportReview ?: return@launch
+            publishPassportRender(
+                before = latest,
+                after = PassportReviewFlow.withCroppedBase(latest, croppedUri.toString()),
+                renderedUri = croppedUri.toString()
+            )
+            passportPendingPreviewCrop = null
+            passportPreviewSession.installBase()
+            regeneratePassportFilterThumbnails()
+            renderPassportFilter()
+            maybeRenderPassportRotation()
+            maybeRenderPassportWatermark()
+            maybePublishPassportFinalFrame(PassportPreviewOperation.CROP)
+        }
+    }
+
+    /** Cancels the passport review, discarding the captured page and any in-flight renders. */
+    internal fun cancelPassportReview() {
+        val abandoned = passportReview
+        passportFilterJob?.cancel()
+        passportFilterJob = null
+        passportRotationJob?.cancel()
+        passportRotationJob = null
+        passportWatermarkJob?.cancel()
+        passportWatermarkJob = null
+        passportSaveJob?.cancel()
+        passportSaveJob = null
+        // Tear down the in-memory preview pipeline: cancel preview jobs, clear the bus and the
+        // cached bitmaps (GC-released, never recycled while Compose may still draw them).
+        clearPassportPreviewPipeline()
+        // Bump the session so any callback still in flight is treated as stale.
+        passportReviewSession++
+        passportReview = null
+        // The state transition above is complete; delete this session's unsaved app-owned files
+        // off the main thread (never external content URIs). A file frozen by a save that already
+        // reached the repository is RETAINED — cancelling the review must never destroy a document
+        // that was actually persisted.
+        sweepPassportSession(previousState = abandoned, retainUris = setOfNotNull(passportSaveFrozenUri))
+        passportSaveFrozenUri = null
+    }
+
+    /**
+     * Ends the current review visit's file ownership: snapshots the ledger and [previousState] on
+     * the main thread, clears the ledger, and deletes every orphan on [Dispatchers.IO]. [retainUris]
+     * always survives (the save-frozen / persisted final image). A no-op when the visit owned
+     * nothing, so the ordinary "no review open" path costs nothing.
+     */
+    private fun sweepPassportSession(previousState: PassportReviewState?, retainUris: Set<String>) {
+        val owned = passportOwnedUris.toSet()
+        passportOwnedUris.clear()
+        if (owned.isEmpty() && previousState == null) return
+        lifecycleScope.launch {
+            cleanupPassportSessionFiles(ownedUris = owned, state = previousState, retainUris = retainUris)
+        }
+    }
+
+    /**
+     * Deletes the app-owned temporary files a passport review session produced but never
+     * persisted: everything the visit's [ownedUris] ledger recorded (including files dropped by an
+     * EARLIER transition and no longer reachable from [state]) plus whatever [state] still
+     * references. All existence checks and deletes run on [Dispatchers.IO] — no synchronous file
+     * I/O touches the UI thread. Only files under the app-private [filesDir] are touched; an
+     * external gallery content URI (which the baker copies from but never owns) and [retainUris]
+     * (the persisted final artifact on the success path) are left untouched. Callers complete
+     * their state transition on the main thread BEFORE invoking this, so it never participates in
+     * a half-applied transition, and a delete that fails is swallowed — the user's saved document
+     * is never at risk from cleanup.
+     */
+    private suspend fun cleanupPassportSessionFiles(
+        ownedUris: Set<String>,
+        state: PassportReviewState?,
+        retainUris: Set<String> = emptySet()
+    ) {
+        val candidates = PassportFileOwnership.sessionOrphans(
+            ownedUris = ownedUris,
+            state = state,
+            retainUris = retainUris
+        )
+        if (candidates.isEmpty()) return
+        val filesDirPath = filesDir.absolutePath
+        withContext(Dispatchers.IO) {
+            candidates.forEach { uriString -> deleteOwnedFileBlocking(uriString, filesDirPath) }
+        }
+    }
+
+    /**
+     * Deletes a single app-owned passport temp file (a `file://` URI under [filesDir]) on
+     * [Dispatchers.IO] — used for stale async renders (generation mismatch) and superseded
+     * outputs. External content URIs and files outside the app's private storage are never touched.
+     */
+    private suspend fun deletePassportOwnedFile(uriString: String?) {
+        val filesDirPath = filesDir.absolutePath
+        withContext(Dispatchers.IO) { deleteOwnedFileBlocking(uriString, filesDirPath) }
+    }
+
+    /**
+     * Blocking single-file delete — MUST be called from an IO dispatcher. Only deletes a
+     * `file://` path under [filesDirPath]; external/other URIs are ignored. Two INDEPENDENT
+     * barriers must both admit the path: the pure string check in
+     * [PassportFileOwnership.isOwnedFileUri] (scheme, private-directory containment, no `..`
+     * traversal) and the parsed-path containment check below. A user's gallery original — always a
+     * `content://` URI the baker copies FROM and never owns — is rejected by both.
+     */
+    private fun deleteOwnedFileBlocking(uriString: String?, filesDirPath: String) {
+        if (!PassportFileOwnership.isOwnedFileUri(uriString, filesDirPath)) return
+        val uri = uriString?.let { runCatching { Uri.parse(it) }.getOrNull() } ?: return
+        if (uri.scheme != "file") return
+        runCatching {
+            val path = uri.path
+            if (path != null) {
+                val file = File(path)
+                if (file.absolutePath.startsWith(filesDirPath)) file.delete()
+            }
+        }
+    }
+
+    /**
+     * Rotates the reviewed passport page 90° clockwise. The cached preview bitmap rotates and
+     * publishes IMMEDIATELY (no spinner, no display-rotation transform — the preview pixels are
+     * rotated in memory, so the page stays fully contained at 90°/270°); the authoritative
+     * full-resolution bake runs in the background and atomically replaces the preview when it
+     * settles. Confirm stays blocked until then. Invalidates and re-renders the watermark.
+     */
+    internal fun rotatePassportReview() {
+        val before = passportReview ?: return
+        // A fourth tap returns to 0°, which settles instantly and DROPS the rotation bake; the
+        // watermark render is invalidated on every tap. Publishing through the helper deletes both
+        // of those superseded files instead of orphaning them.
+        publishPassportReview(before, PassportReviewFlow.rotate(before))
+        startPassportPreviewRender(PassportPreviewOperation.ROTATE)
+        maybeRenderPassportRotation()
+        maybeRenderPassportWatermark()
+        // A rotation back to 0° settles instantly (no bake) — publish its final directly.
+        maybePublishPassportFinalFrame(PassportPreviewOperation.ROTATE)
+    }
+
+    /**
+     * Sets or clears the user's watermark text. The watermark is drawn onto the cached preview
+     * bitmap IMMEDIATELY (same placement geometry as the authoritative renderer); the
+     * authoritative render follows in the background and remains the exact save source.
+     */
+    internal fun setPassportWatermark(text: String?) {
+        val before = passportReview ?: return
+        // Setting new text or clearing the watermark drops the previous render — delete it once
+        // the new state is live.
+        publishPassportReview(before, PassportReviewFlow.withWatermark(before, text))
+        startPassportPreviewRender(PassportPreviewOperation.WATERMARK)
+        // Removing a watermark re-arms a standalone rotation bake; setting one hands rotation to
+        // the watermark render.
+        maybeRenderPassportRotation()
+        maybeRenderPassportWatermark()
+        // Removing the watermark with everything else settled needs no render — publish final.
+        maybePublishPassportFinalFrame(PassportPreviewOperation.WATERMARK)
+    }
+
+    /**
+     * Applies a filter to the passport page: the cached preview re-composes and publishes
+     * IMMEDIATELY (no spinner), then the authoritative render runs non-destructively from the
+     * retained canonical base with the same generation-token + reducer-input staleness
+     * protection the ID-card review uses (an older render can never replace a newer selection).
+     */
+    internal fun applyPassportFilter(filter: DocumentFilter) {
+        val current = passportReview ?: return
+        val updated = PassportReviewFlow.applyFilter(current, filter)
+        if (updated === current) return
+        // Selecting ORIGINAL drops the settled filter render, and any change invalidates the
+        // watermark render — both are deleted once the new state is live.
+        publishPassportReview(current, updated)
+        startPassportPreviewRender(PassportPreviewOperation.FILTER)
+        renderPassportFilter()
+        // Selecting ORIGINAL settles without a filter render — re-arm the rotation/watermark
+        // renders it invalidated (renderPassportFilter early-returns for ORIGINAL), and publish
+        // the final directly when nothing at all is pending.
+        maybeRenderPassportRotation()
+        maybeRenderPassportWatermark()
+        maybePublishPassportFinalFrame(PassportPreviewOperation.FILTER)
+    }
+
+    private fun renderPassportFilter() {
+        val state = passportReview ?: return
+        val filter = state.selectedFilter
+        val baseUri = state.baseUri
+        val generation = ++passportFilterGeneration
+        passportFilterJob?.cancel()
+        if (filter == DocumentFilter.ORIGINAL) return
+
+        passportFilterJob = lifecycleScope.launch {
+            val rendered = try {
+                DocumentFilterRenderer.render(
+                    context = this@MainActivity,
+                    sourceUri = Uri.parse(baseUri),
+                    filter = filter,
+                    outputDirectory = File(filesDir, "passport_filtered")
+                )
+            } catch (cancellation: CancellationException) {
+                throw cancellation
+            } catch (throwable: Throwable) {
+                Log.w(TAG, "Unable to render passport filter ${filter.name}: ${throwable.message}")
+                null
+            }
+            if (passportFilterGeneration != generation) {
+                // A newer selection superseded this render — delete the orphaned stale output.
+                deletePassportOwnedFile(rendered?.toString())
+                return@launch
+            }
+            val latest = passportReview ?: return@launch
+            if (rendered == null) {
+                // The fallback may revert filteredUri to the base, dropping the old render.
+                publishPassportReview(latest, PassportReviewFlow.withRenderFailed(latest, filter, baseUri))
+                // A watermark invalidated by the (failed) filter change would otherwise stay
+                // pending forever with Confirm disabled. The fallback restored a truthful
+                // filtered page, so re-arm the watermark render over it (or, if that render also
+                // fails, withWatermarkFailed lands an explicit recoverable error state).
+                maybeRenderPassportRotation()
+                maybeRenderPassportWatermark()
+                viewModel.showError("Unable to apply ${filter.displayName}. Tap it again to retry.")
+                return@launch
+            }
+            // Publish, then delete what the new state stopped referencing — the replaced filter
+            // render (never the canonical base, never the freshly published file) and the watermark
+            // render this filter change invalidated — or this render itself if it was rejected.
+            publishPassportRender(
+                before = latest,
+                after = PassportReviewFlow.withRenderedFilter(
+                    state = latest,
+                    filter = filter,
+                    fromBaseUri = baseUri,
+                    renderedUri = rendered.toString()
+                ),
+                renderedUri = rendered.toString()
+            )
+            // The filter has settled — now the rotation bake and watermark (if any) can render,
+            // and when nothing further is pending the final pixels replace the instant preview.
+            maybeRenderPassportRotation()
+            maybeRenderPassportWatermark()
+            maybePublishPassportFinalFrame(PassportPreviewOperation.FILTER)
+        }
     }
 
     /**

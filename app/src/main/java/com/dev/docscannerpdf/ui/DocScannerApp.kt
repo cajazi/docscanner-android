@@ -23,8 +23,13 @@ import com.dev.docscannerpdf.navigation.resolveAppSurface
 import com.dev.docscannerpdf.ui.debug.ApiHealthScreen
 import com.dev.docscannerpdf.ui.crop.CropEditorScreen
 import com.dev.docscannerpdf.ui.detection.LiveScannerScreen
+import com.dev.docscannerpdf.domain.idscan.IdentityDocumentMode
+import com.dev.docscannerpdf.ui.idcard.CameraOwnershipLog
 import com.dev.docscannerpdf.ui.idcard.IdCardGuidedCaptureScreen
 import com.dev.docscannerpdf.ui.idcard.IdCardReviewScreen
+import com.dev.docscannerpdf.ui.idcard.PassportGuidedCaptureScreen
+import com.dev.docscannerpdf.ui.idcard.PassportCropEditorScreen
+import com.dev.docscannerpdf.ui.idcard.PassportReviewScreen
 import com.dev.docscannerpdf.ui.library.DocumentLibraryScreen
 import com.dev.docscannerpdf.ui.library.buildDocumentLibraryState
 import com.dev.docscannerpdf.ui.pages.MultiPageDocumentEditorScreen
@@ -55,6 +60,8 @@ internal fun DocScannerApp(host: MainActivity) {
                     appLockActive = host.appLockSettings.lockEnabled && !host.appUnlocked,
                     showOnboarding = host.showOnboarding,
                     showIdCardGuidedCapture = host.showIdCardGuidedCapture,
+                    showPassportCapture = host.showPassportCapture,
+                    passportReviewOpen = host.passportReview != null,
                     idCardReviewOpen = host.idCardReview != null
                 )
                 if (BuildConfig.DEBUG) {
@@ -63,8 +70,11 @@ internal fun DocScannerApp(host: MainActivity) {
                     LaunchedEffect(topSurface) {
                         Log.d(
                             "IdCardCapture",
-                            "ID_CARD_CAPTURE_HOST surface=$topSurface " +
-                                "captureVisible=${host.showIdCardGuidedCapture}"
+                            CameraOwnershipLog.host(
+                                surface = topSurface.toString(),
+                                idCardCaptureVisible = host.showIdCardGuidedCapture,
+                                passportCaptureVisible = host.showPassportCapture
+                            )
                         )
                     }
                 }
@@ -95,6 +105,51 @@ internal fun DocScannerApp(host: MainActivity) {
                             host.beginIdCardReview(front, back)
                         }
                     )
+                } else if (topSurface == AppSurface.PASSPORT_CAPTURE) {
+                    // Near-modal priority, same rationale as ID-card capture: the passport
+                    // CameraX session must never be replaced by a lower branch flickering
+                    // non-null. Single-page portrait flow; on completion it routes into the
+                    // DEDICATED passport review below — never the generic Document Ready preview.
+                    PassportGuidedCaptureScreen(
+                        outputDirectory = host.passportCaptureDirectory,
+                        onBack = { host.showPassportCapture = false },
+                        onCaptureComplete = { page -> host.beginPassportReview(page) }
+                    )
+                } else if (topSurface == AppSurface.PASSPORT_REVIEW) {
+                    // The DEDICATED passport review — never the generic Document Ready screen,
+                    // so no backend-processing / E2E-validation / To Word surface can appear in
+                    // the passport path.
+                    val passportState = host.passportReview!!
+                    val passportCrop = host.passportCropRect
+                    if (passportCrop != null) {
+                        // The interactive rectangular crop editor sits on top of the passport
+                        // review; cancel returns without changing the review state.
+                        PassportCropEditorScreen(
+                            sourceBitmap = host.passportCropSourceBitmap,
+                            crop = passportCrop,
+                            applying = host.passportCropApplying,
+                            onMoveHandle = host::passportCropMoveHandle,
+                            onMoveBy = host::passportCropMoveBy,
+                            onReset = host::passportCropReset,
+                            onApply = host::passportCropApply,
+                            onCancel = host::cancelPassportCropEditor
+                        )
+                    } else {
+                        // The instant-preview frame stream: in-memory previews the moment the
+                        // user taps, atomically replaced by settled authoritative pixels.
+                        val passportPreviewFrame by host.passportPreviewFrames.collectAsState()
+                        PassportReviewScreen(
+                            state = passportState,
+                            previewFrame = passportPreviewFrame,
+                            filterThumbnails = host.passportFilterThumbnails,
+                            onBack = host::cancelPassportReview,
+                            onCrop = host::openPassportCropEditor,
+                            onRotate = host::rotatePassportReview,
+                            onSelectFilter = host::applyPassportFilter,
+                            onSetWatermark = host::setPassportWatermark,
+                            onConfirm = host::confirmPassportReview
+                        )
+                    }
                 } else if (host.showCloudSync) {
                     CloudSyncScreen(
                         state = cloudSyncState,
@@ -686,12 +741,18 @@ internal fun DocScannerApp(host: MainActivity) {
                                 host.idCardValidationMessage = "Please select an ID card type before scanning."
                             } else {
                                 host.idCardValidationMessage = null
-                                host.showIdCardFlow = false
-                                // CamScanner-style guided front/back capture instead of the ML
-                                // Kit document scanner UI.
-                                host.startIdCardGuidedCapture(
-                                    titlePrefix = host.selectedIdCardCategory
-                                )
+                                // Passport is a single portrait page; every other type keeps the
+                                // existing Front/Back card guided capture.
+                                if (IdentityDocumentMode.fromEntryLabel(host.selectedIdCardCategory) ==
+                                    IdentityDocumentMode.PASSPORT
+                                ) {
+                                    host.startPassportCapture()
+                                } else {
+                                    host.showIdCardFlow = false
+                                    host.startIdCardGuidedCapture(
+                                        titlePrefix = host.selectedIdCardCategory
+                                    )
+                                }
                             }
                         },
                         modifier = Modifier.fillMaxSize()

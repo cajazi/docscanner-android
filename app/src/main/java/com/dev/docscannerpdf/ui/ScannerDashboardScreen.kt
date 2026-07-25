@@ -123,6 +123,7 @@ import androidx.camera.view.PreviewView
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.core.content.ContextCompat
+import com.dev.docscannerpdf.ui.idcard.CameraSurfaceOwner
 import com.dev.docscannerpdf.ui.idcard.DarkSystemBarsEffect
 import com.dev.docscannerpdf.ui.idcard.IdCardCameraController
 
@@ -1104,7 +1105,11 @@ fun IdCardFeatureScreen(
     ) {
         if (hasCameraPermission) {
             val controller = remember(lifecycleOwner) {
-                IdCardCameraController(context = context, lifecycleOwner = lifecycleOwner)
+                IdCardCameraController(
+                    context = context,
+                    lifecycleOwner = lifecycleOwner,
+                    owner = CameraSurfaceOwner.ID_CARDS_ENTRY
+                )
             }
             AndroidView(
                 modifier = Modifier.fillMaxSize(),
