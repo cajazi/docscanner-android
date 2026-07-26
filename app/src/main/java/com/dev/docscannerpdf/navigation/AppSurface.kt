@@ -13,6 +13,8 @@ enum class AppSurface {
     ID_CARD_CAPTURE,
     PASSPORT_CAPTURE,
     PASSPORT_REVIEW,
+    MAIN_SCAN_CAPTURE,
+    MAIN_SCAN_CROP,
     ID_CARD_REVIEW,
     OTHER
 }
@@ -33,6 +35,8 @@ fun resolveAppSurface(
     showIdCardGuidedCapture: Boolean,
     showPassportCapture: Boolean,
     passportReviewOpen: Boolean,
+    mainScanCaptureOpen: Boolean,
+    mainScanPageUri: String?,
     idCardReviewOpen: Boolean
 ): AppSurface = when {
     appLockActive -> AppSurface.APP_LOCK
@@ -40,6 +44,11 @@ fun resolveAppSurface(
     showIdCardGuidedCapture -> AppSurface.ID_CARD_CAPTURE
     showPassportCapture -> AppSurface.PASSPORT_CAPTURE
     passportReviewOpen -> AppSurface.PASSPORT_REVIEW
+    // The Main Scanner crop surface outranks its own camera: a capture that has handed a page
+    // forward must land on crop even while the capture flag is still settling, so the captured
+    // pixels are never replaced by a re-mounted preview (reference invariant 5 — no stale frame).
+    !mainScanPageUri.isNullOrBlank() -> AppSurface.MAIN_SCAN_CROP
+    mainScanCaptureOpen -> AppSurface.MAIN_SCAN_CAPTURE
     idCardReviewOpen -> AppSurface.ID_CARD_REVIEW
     else -> AppSurface.OTHER
 }

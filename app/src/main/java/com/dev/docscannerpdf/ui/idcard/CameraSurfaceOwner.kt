@@ -18,6 +18,9 @@ enum class CameraSurfaceOwner {
     /** The guided single-page Passport capture screen. */
     PASSPORT_GUIDED_CAPTURE,
 
+    /** The app-owned Main Scanner document capture screen (clean preview, manual shutter). */
+    MAIN_SCAN_CAPTURE,
+
     /** Any other camera surface not enumerated above. */
     OTHER
 }
@@ -50,9 +53,11 @@ object CameraOwnershipLog {
     fun host(
         surface: String,
         idCardCaptureVisible: Boolean,
-        passportCaptureVisible: Boolean
+        passportCaptureVisible: Boolean,
+        mainScanCaptureVisible: Boolean = false
     ): String =
         "CAMERA_HOST surface=$surface " +
             "idCardCaptureVisible=$idCardCaptureVisible " +
-            "passportCaptureVisible=$passportCaptureVisible"
+            "passportCaptureVisible=$passportCaptureVisible " +
+            "mainScanCaptureVisible=$mainScanCaptureVisible"
 }

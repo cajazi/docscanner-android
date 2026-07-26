@@ -27,6 +27,10 @@ import com.dev.docscannerpdf.domain.idscan.IdentityDocumentMode
 import com.dev.docscannerpdf.ui.idcard.CameraOwnershipLog
 import com.dev.docscannerpdf.ui.idcard.IdCardGuidedCaptureScreen
 import com.dev.docscannerpdf.ui.idcard.IdCardReviewScreen
+import com.dev.docscannerpdf.domain.mainscan.MainScanRouting
+import com.dev.docscannerpdf.domain.mainscan.PrimaryScanTarget
+import com.dev.docscannerpdf.ui.mainscan.MainScanCropHostScreen
+import com.dev.docscannerpdf.ui.mainscan.MainScannerCaptureScreen
 import com.dev.docscannerpdf.ui.idcard.PassportGuidedCaptureScreen
 import com.dev.docscannerpdf.ui.idcard.PassportCropEditorScreen
 import com.dev.docscannerpdf.ui.idcard.PassportReviewScreen
@@ -62,6 +66,8 @@ internal fun DocScannerApp(host: MainActivity) {
                     showIdCardGuidedCapture = host.showIdCardGuidedCapture,
                     showPassportCapture = host.showPassportCapture,
                     passportReviewOpen = host.passportReview != null,
+                    mainScanCaptureOpen = host.showMainScanCapture,
+                    mainScanPageUri = host.mainScanState.pendingPage?.uri,
                     idCardReviewOpen = host.idCardReview != null
                 )
                 if (BuildConfig.DEBUG) {
@@ -73,7 +79,8 @@ internal fun DocScannerApp(host: MainActivity) {
                             CameraOwnershipLog.host(
                                 surface = topSurface.toString(),
                                 idCardCaptureVisible = host.showIdCardGuidedCapture,
-                                passportCaptureVisible = host.showPassportCapture
+                                passportCaptureVisible = host.showPassportCapture,
+                                mainScanCaptureVisible = host.showMainScanCapture
                             )
                         )
                     }
@@ -104,6 +111,34 @@ internal fun DocScannerApp(host: MainActivity) {
                         onCaptureComplete = { front, back ->
                             host.beginIdCardReview(front, back)
                         }
+                    )
+                } else if (topSurface == AppSurface.MAIN_SCAN_CROP) {
+                    // The DEDICATED Main Scanner crop surface — never the generic Document Ready
+                    // screen. It outranks its own camera so the captured pixels it is already
+                    // showing can never be replaced by a re-mounted preview. A page URI is
+                    // guaranteed non-null here by resolveAppSurface, so this surface can never be
+                    // reached without pixels to display.
+                    MainScanCropHostScreen(
+                        pageUri = host.mainScanState.pendingPage!!.uri,
+                        onBack = host::requestMainScanDiscard
+                    )
+                } else if (topSurface == AppSurface.MAIN_SCAN_CAPTURE) {
+                    // Near-modal priority, same rationale as ID-card/passport capture: the
+                    // app-owned Main Scanner CameraX session must never be replaced by a lower
+                    // branch flickering non-null. Clean preview, always-armed manual shutter, and
+                    // no Room write anywhere in this surface.
+                    MainScannerCaptureScreen(
+                        outputDirectory = host.mainScanCaptureDirectory,
+                        state = host.mainScanState,
+                        onCaptureStarted = host::onMainScanCaptureStarted,
+                        onCaptureSucceeded = host::onMainScanCaptureSucceeded,
+                        onCaptureFailed = host::onMainScanCaptureFailed,
+                        onCaptureTimedOut = host::onMainScanCaptureTimedOut,
+                        onCameraUnavailable = host::onMainScanCameraUnavailable,
+                        // Same single decision system/predictive Back uses — see onMainScanBack.
+                        onBack = host::onMainScanBack,
+                        onCancelDiscard = host::cancelMainScanDiscard,
+                        onConfirmDiscard = host::confirmMainScanDiscard
                     )
                 } else if (topSurface == AppSurface.PASSPORT_CAPTURE) {
                     // Near-modal priority, same rationale as ID-card capture: the passport
@@ -859,7 +894,15 @@ internal fun DocScannerApp(host: MainActivity) {
                 } else {
                     ScannerDashboardScreen(
                         viewModel = host.viewModel,
-                        onStartScan = { host.startDocumentScanner(pageLimit = 20) },
+                        // Build-type routing: debug opens the app-owned Main Scanner, release opens
+                        // ML Kit. BuildConfig.DEBUG is the only input, so a release binary can
+                        // never reach the incomplete flow. See MainScanRouting.
+                        onStartScan = {
+                            when (MainScanRouting.primaryScanTarget(BuildConfig.DEBUG)) {
+                                PrimaryScanTarget.MAIN_SCANNER -> host.startMainScanCapture()
+                                PrimaryScanTarget.ML_KIT -> host.startDocumentScanner(pageLimit = 20)
+                            }
+                        },
                         onPdfTools = { host.showPdfTools = true },
                         onImportImages = { host.imageImportLauncher.launch("image/*") },
                         onImportFiles = { host.fileImportLauncher.launch(arrayOf(AppConstants.PDF_MIME_TYPE)) },
