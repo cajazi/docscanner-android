@@ -65,12 +65,13 @@ class CameraOwnershipLogTest {
     }
 
     @Test
-    fun theFourCameraOwnersAreDistinctAndComplete() {
+    fun everyCameraOwnerIsDistinctAndComplete() {
         assertEquals(
             setOf(
                 "ID_CARDS_ENTRY",
                 "ID_CARD_GUIDED_CAPTURE",
                 "PASSPORT_GUIDED_CAPTURE",
+                "MAIN_SCAN_CAPTURE",
                 "OTHER"
             ),
             CameraSurfaceOwner.entries.map { it.name }.toSet()
@@ -78,16 +79,42 @@ class CameraOwnershipLogTest {
     }
 
     @Test
+    fun mainScannerHasItsOwnOwnerTag() {
+        // The app-owned Main Scanner binds its own controller; its lifecycle lines must never be
+        // confusable with the ID-card or passport controllers in the evidence.
+        val mainScan = CameraOwnershipLog.created(CameraSurfaceOwner.MAIN_SCAN_CAPTURE, "m1")
+        assertTrue(mainScan.contains("owner=MAIN_SCAN_CAPTURE"))
+        assertFalse(mainScan.contains("PASSPORT"))
+        assertFalse(mainScan.contains("ID_CARD"))
+    }
+
+    @Test
     fun hostLineReportsEachCaptureSurfaceVisibilityIndependently() {
         // Replaces the misleading "surface=PASSPORT_CAPTURE captureVisible=false": passport is
-        // visible, the ID-card guided surface is not, and BOTH are stated truthfully.
+        // visible, the other capture surfaces are not, and ALL are stated truthfully.
         assertEquals(
             "CAMERA_HOST surface=PASSPORT_CAPTURE " +
-                "idCardCaptureVisible=false passportCaptureVisible=true",
+                "idCardCaptureVisible=false passportCaptureVisible=true " +
+                "mainScanCaptureVisible=false",
             CameraOwnershipLog.host(
                 surface = "PASSPORT_CAPTURE",
                 idCardCaptureVisible = false,
                 passportCaptureVisible = true
+            )
+        )
+    }
+
+    @Test
+    fun hostLineReportsMainScannerVisibilityTruthfully() {
+        assertEquals(
+            "CAMERA_HOST surface=MAIN_SCAN_CAPTURE " +
+                "idCardCaptureVisible=false passportCaptureVisible=false " +
+                "mainScanCaptureVisible=true",
+            CameraOwnershipLog.host(
+                surface = "MAIN_SCAN_CAPTURE",
+                idCardCaptureVisible = false,
+                passportCaptureVisible = false,
+                mainScanCaptureVisible = true
             )
         )
     }

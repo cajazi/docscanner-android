@@ -46,6 +46,10 @@ internal fun MainActivity.currentScreen(): MainScreen {
         showPassportCapture -> MainScreen.PassportGuidedCapture
         passportCropRect != null -> MainScreen.PassportReview
         passportReview != null -> MainScreen.PassportReview
+        // Main Scanner: the crop surface outranks its own camera so handed-forward pixels are
+        // never replaced by a re-mounted preview.
+        mainScanState.pendingPage != null -> MainScreen.MainScanCrop
+        showMainScanCapture -> MainScreen.MainScanCapture
         idCardCropState != null -> MainScreen.IdCardCropEditor
         idCardReview != null -> MainScreen.IdCardReview
         cropState != null -> MainScreen.CropEditor
@@ -91,6 +95,12 @@ internal fun MainActivity.handleSystemBack() {
         showLiveScanner -> showLiveScanner = false
         showIdCardGuidedCapture -> showIdCardGuidedCapture = false
         showPassportCapture -> showPassportCapture = false
+        // Main Scanner Back is a discard DECISION, never a silent drop of captured pixels. The
+        // dialog closes first; then a pending page (or an owned temp file) requires confirmation;
+        // a pristine capture surface with nothing to lose exits directly.
+        mainScanState.discardConfirmVisible -> cancelMainScanDiscard()
+        mainScanState.pendingPage != null -> requestMainScanDiscard()
+        showMainScanCapture -> onMainScanBack()
         passportCropRect != null -> cancelPassportCropEditor()
         // A passport save is an IMMUTABLE transaction: while it runs, system/predictive Back is
         // consumed as a no-op so the review can neither be left nor cancelled mid-save.

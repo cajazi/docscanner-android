@@ -33,6 +33,8 @@ enum class MainScreen {
     IdCardGuidedCapture,
     PassportGuidedCapture,
     PassportReview,
+    MainScanCapture,
+    MainScanCrop,
     IdCardReview,
     IdCardCropEditor
 }

@@ -134,6 +134,13 @@ import com.dev.docscannerpdf.domain.idscan.PassportReviewState
 import com.dev.docscannerpdf.domain.idscan.PassportTimingLog
 import com.dev.docscannerpdf.domain.idscan.PassportFailureStage
 import com.dev.docscannerpdf.domain.idscan.PassportWatermarkRenderer
+import androidx.core.net.toUri
+import com.dev.docscannerpdf.domain.mainscan.MainScanCaptureFlow
+import com.dev.docscannerpdf.domain.mainscan.MainScanCaptureState
+import com.dev.docscannerpdf.domain.mainscan.MainScanCaptureTicket
+import com.dev.docscannerpdf.domain.mainscan.MainScanFileOwnership
+import com.dev.docscannerpdf.domain.mainscan.MainScanPageSource
+import com.dev.docscannerpdf.domain.mainscan.MainScanTrace
 import com.dev.docscannerpdf.ui.crop.CropImageProcessor
 import com.dev.docscannerpdf.ui.detection.LumaFrameFactory
 import com.dev.docscannerpdf.ui.DocScannerApp
@@ -1286,6 +1293,274 @@ class MainActivity : FragmentActivity() {
     internal fun startPassportCapture() {
         showIdCardFlow = false
         showPassportCapture = true
+    }
+
+    // ---- Main Scanner (app-owned document capture) --------------------------------------------
+    //
+    // The app's PRIMARY document workflow. Distinct from the ID-card and passport flows and from
+    // the ML Kit document scanner, which stays reachable as an internal fallback until this flow
+    // reaches approved parity with docs/main-scanner-reference.md.
+    //
+    // Slice 1 scope: camera ownership, manual capture, the pending-page session, temp-file
+    // ownership, and routing into the dedicated crop surface. Deliberately NOT here: any Room
+    // write (capture must never persist), any generic Document Ready routing, and any raw-pixel
+    // fallback after a failed capture.
+
+    /** Directory captured Main Scanner pages are written to — private app storage, never external. */
+    internal val mainScanCaptureDirectory: File
+        get() = File(filesDir, "main_scan_capture")
+
+    /** Whether the app-owned Main Scanner camera is showing. */
+    internal var showMainScanCapture by mutableStateOf(false)
+
+    /**
+     * Pure session state for the current Main Scanner visit: capture stage, generation token,
+     * pending page, owned-file ledger and discard-dialog visibility. Every transition goes through
+     * [MainScanCaptureFlow] so the capture contract is unit-testable without a device.
+     */
+    internal var mainScanState by mutableStateOf(MainScanCaptureState())
+
+    /** Opens the app-owned Main Scanner camera on a brand-new visit id. */
+    internal fun startMainScanCapture() {
+        // A new visit must not inherit a previous visit's ledger, generation or pending page, and
+        // its NEW sessionId invalidates every capture still in flight from the previous one.
+        val previous = mainScanState
+        sweepMainScanSession(previousState = previous, retainUris = emptySet())
+        mainScanState = MainScanCaptureFlow.beginVisit(previous)
+        showMainScanCapture = true
+        // Create the capture directory NOW, off the main thread, so the shutter path never performs
+        // mkdirs on the UI thread (the capture call only does a cheap isDirectory check).
+        //
+        // Then reclaim unreachable orphans. The visit ledger lives in memory, so a process death or
+        // a force-stop mid-visit strands its capture files permanently — physical QA found four such
+        // files from an earlier interrupted run. Entering the scanner from the dashboard is the one
+        // moment when NOTHING in this directory can still be needed (no pending page exists yet, and
+        // a saved document never lives here), so a full sweep is safe exactly here. It is not done on
+        // the discard→camera path, which keeps its own visit ledger.
+        val directory = mainScanCaptureDirectory
+        // Only files that already existed when this visit opened may be reclaimed. The sweep runs
+        // asynchronously, so without this bound a capture completing before the enumeration could be
+        // deleted out from under its own pending page — destroying the very frame the user is about
+        // to crop. A file this visit writes always has a later timestamp, so it is structurally
+        // outside the sweep's reach rather than merely unlikely to be caught by it.
+        val visitOpenedAtMs = System.currentTimeMillis()
+        lifecycleScope.launch {
+            withContext(Dispatchers.IO) {
+                runCatching { if (!directory.isDirectory) directory.mkdirs() }
+                val reclaimed = runCatching {
+                    directory.listFiles()?.count { file ->
+                        file.isFile &&
+                            MainScanFileOwnership.isReclaimableOrphan(
+                                lastModifiedMs = file.lastModified(),
+                                visitOpenedAtMs = visitOpenedAtMs
+                            ) &&
+                            file.delete()
+                    } ?: 0
+                }.getOrDefault(0)
+                if (BuildConfig.DEBUG && reclaimed > 0) {
+                    Log.d(MAIN_SCAN_TAG, "MAIN_SCAN_ORPHANS reclaimed=$reclaimed")
+                }
+            }
+        }
+    }
+
+    /**
+     * Leaves the capture surface. Only called once Back has established there is nothing to lose
+     * (see [MainScanCaptureFlow.backNeedsConfirmation]). Moving to a new visit id is what makes a
+     * late capture callback from the visit being left unable to publish or navigate, and anything
+     * owned is still swept so it cannot leave a file behind.
+     */
+    internal fun closeMainScanCapture() {
+        val abandoned = mainScanState
+        showMainScanCapture = false
+        mainScanState = MainScanCaptureFlow.beginVisit(abandoned)
+        sweepMainScanSession(previousState = abandoned, retainUris = emptySet())
+    }
+
+    /**
+     * Acquires the single-flight capture slot, returning the ticket (visit id + generation) the
+     * capture screen must carry through its async result, or null when the reducer rejects the tap
+     * (a capture is already in flight, a hand-off is routing, or the discard dialog is open).
+     */
+    internal fun onMainScanCaptureStarted(): MainScanCaptureTicket? {
+        val issued = MainScanCaptureFlow.beginCapture(mainScanState)
+        if (issued == null) {
+            MainScanTrace.shutterRejected(reason = "reducer_busy_or_dialog")
+            return null
+        }
+        val (next, ticket) = issued
+        mainScanState = next
+        MainScanTrace.shutterAccepted(ticket.sessionId, ticket.generation)
+        return ticket
+    }
+
+    /**
+     * Publishes a captured page and routes to the dedicated crop surface. If the reducer rejects the
+     * result — a newer capture won, or the visit that started it has since been left — the file is
+     * referenced by nothing and is deleted, so a stale capture neither navigates nor leaks output.
+     *
+     * The delete goes through the two-barrier guard, so it can only ever remove an app-owned
+     * `file://` path inside private storage. No document row is created here: capture never persists.
+     */
+    internal fun onMainScanCaptureSucceeded(ticket: MainScanCaptureTicket, uri: Uri) {
+        val before = mainScanState
+        val surfaceBefore = mainScanSurfaceName(before)
+        val after = MainScanCaptureFlow.captureSucceeded(
+            state = before,
+            ticket = ticket,
+            uri = uri.toString(),
+            source = MainScanPageSource.CAMERA
+        )
+        mainScanState = after
+        MainScanTrace.surfaceTransition(before = surfaceBefore, after = mainScanSurfaceName(after))
+        if (uri.toString() !in MainScanFileOwnership.referencedUris(after)) {
+            MainScanTrace.ticketRejected(
+                ticketSessionId = ticket.sessionId,
+                ticketGeneration = ticket.generation,
+                liveSessionId = before.sessionId,
+                liveGeneration = before.captureGeneration
+            )
+            val appOwned = MainScanFileOwnership.isOwnedFileUri(uri.toString(), filesDir.absolutePath)
+            MainScanTrace.staleOutputDeleted(appOwned = appOwned)
+            lifecycleScope.launch { deleteMainScanOwnedFile(uri.toString()) }
+            return
+        }
+        MainScanTrace.ticketAccepted(ticket.sessionId, ticket.generation)
+        MainScanTrace.pendingPagePublished(ticket.sessionId, ticket.generation)
+    }
+
+    /**
+     * The surface name the resolver would pick for [state], used only for the debug trace so a
+     * publication can be read against the surface change it caused. Mirrors the resolver's main-scan
+     * ordering; never used for real routing.
+     */
+    private fun mainScanSurfaceName(state: MainScanCaptureState): String = when {
+        state.pendingPage != null -> "MAIN_SCAN_CROP"
+        showMainScanCapture -> "MAIN_SCAN_CAPTURE"
+        else -> "OTHER"
+    }
+
+    /**
+     * A capture produced no callback within the watchdog bound. Re-arms the shutter with a controlled
+     * error and advances the generation so the abandoned capture is now stale — if its result arrives
+     * late it publishes nothing and its output is deleted.
+     */
+    internal fun onMainScanCaptureTimedOut(ticket: MainScanCaptureTicket) {
+        val before = mainScanState
+        val after = MainScanCaptureFlow.captureTimedOut(before, ticket)
+        if (after === before) return
+        mainScanState = after
+        viewModel.showError("That shot didn't complete. Please try again.")
+    }
+
+    /**
+     * Re-arms the shutter after a failed capture. A stale failure (its visit was left, or a newer
+     * capture superseded it) is ignored by the reducer and shows no error. Creates no page, no
+     * document, and never falls back to raw pixels.
+     */
+    internal fun onMainScanCaptureFailed(ticket: MainScanCaptureTicket) {
+        val before = mainScanState
+        val after = MainScanCaptureFlow.captureFailed(before, ticket)
+        if (after === before) return
+        mainScanState = after
+        viewModel.showError("Couldn't take that shot. Please try again.")
+    }
+
+    /**
+     * The camera could not attach all three required use cases. The Main Scanner surface reports a
+     * controlled failure rather than presenting a degraded scanner; this leaves the visit and hands
+     * the user to the intact ML Kit path.
+     */
+    internal fun onMainScanCameraUnavailable() {
+        if (BuildConfig.DEBUG) {
+            Log.d(MAIN_SCAN_TAG, "MAIN_SCAN_CAMERA unavailable=true fallback=ml_kit_offered")
+        }
+        closeMainScanCapture()
+        startDocumentScanner(pageLimit = 20)
+    }
+
+    /**
+     * The SINGLE Back decision for the Main Scanner, used by both the on-screen close affordance
+     * and system/predictive Back so the two can never diverge: confirm when something would be
+     * lost, otherwise exit directly.
+     */
+    internal fun onMainScanBack() {
+        if (MainScanCaptureFlow.backNeedsConfirmation(mainScanState)) {
+            requestMainScanDiscard()
+        } else {
+            closeMainScanCapture()
+        }
+    }
+
+    internal fun requestMainScanDiscard() {
+        mainScanState = MainScanCaptureFlow.requestDiscard(mainScanState)
+    }
+
+    internal fun cancelMainScanDiscard() {
+        mainScanState = MainScanCaptureFlow.cancelDiscard(mainScanState)
+    }
+
+    /**
+     * Confirmed discard: the visit ends on a new id and every app-owned temp file it produced is
+     * deleted off the main thread. Nothing was persisted, so there is nothing to retain.
+     *
+     * Where it lands matches the locked reference: discarding a CAPTURED page returns to the camera
+     * so the user can immediately reshoot, while discarding from the camera itself (nothing captured)
+     * leaves the scanner. The camera is re-entered on a fresh visit, so the returning surface mounts
+     * a new controller with a clean session rather than reusing the discarded one.
+     */
+    internal fun confirmMainScanDiscard() {
+        val abandoned = mainScanState
+        val hadCapturedPage = abandoned.pendingPage != null
+        mainScanState = MainScanCaptureFlow.confirmDiscard(abandoned)
+        showMainScanCapture = hadCapturedPage
+        sweepMainScanSession(previousState = abandoned, retainUris = emptySet())
+        if (BuildConfig.DEBUG) {
+            val destination = if (hadCapturedPage) "MAIN_SCAN_CAPTURE" else "DASHBOARD"
+            Log.d(MAIN_SCAN_TAG, "MAIN_SCAN_DISCARD confirmed=true to=$destination")
+        }
+    }
+
+    /**
+     * Ends a visit's file ownership: snapshots what it owned on the main thread and deletes every
+     * orphan on [Dispatchers.IO]. [retainUris] always survives. A no-op when the visit owned
+     * nothing, so the ordinary "scanner never opened" path costs nothing.
+     */
+    private fun sweepMainScanSession(previousState: MainScanCaptureState?, retainUris: Set<String>) {
+        val orphans = MainScanFileOwnership.visitOrphans(previousState, retainUris)
+        if (orphans.isEmpty()) return
+        val filesDirPath = filesDir.absolutePath
+        lifecycleScope.launch {
+            withContext(Dispatchers.IO) {
+                orphans.forEach { uriString -> deleteMainScanFileBlocking(uriString, filesDirPath) }
+            }
+        }
+    }
+
+    /** Deletes one app-owned Main Scanner temp file off the main thread. */
+    private suspend fun deleteMainScanOwnedFile(uriString: String?) {
+        val filesDirPath = filesDir.absolutePath
+        withContext(Dispatchers.IO) { deleteMainScanFileBlocking(uriString, filesDirPath) }
+    }
+
+    /**
+     * Blocking single-file delete — MUST run on an IO dispatcher. Two INDEPENDENT barriers must
+     * both admit the path: the pure string check in [MainScanFileOwnership.isOwnedFileUri] (scheme,
+     * private-directory containment, no `..` traversal) and the parsed-path containment check
+     * below. A user's gallery original — always a `content://` URI this flow never owns — is
+     * rejected by both, so external content URIs can never be deleted.
+     */
+    private fun deleteMainScanFileBlocking(uriString: String?, filesDirPath: String) {
+        if (!MainScanFileOwnership.isOwnedFileUri(uriString, filesDirPath)) return
+        // `toUri()` is the KTX inline wrapper around Uri.parse — identical behaviour, and the form
+        // lint prefers, so this new code adds no warning. (The passport twin below predates it.)
+        val uri = uriString?.let { runCatching { it.toUri() }.getOrNull() } ?: return
+        if (uri.scheme != "file") return
+        runCatching {
+            val path = uri.path ?: return@runCatching
+            val file = File(path)
+            if (file.absolutePath.startsWith(filesDirPath)) file.delete()
+        }
     }
 
     /** The dedicated single-page passport review (never the generic Document Ready screen). */
@@ -5366,6 +5641,9 @@ class MainActivity : FragmentActivity() {
 
     private companion object {
         const val TAG = "MainActivity"
+
+        /** Logcat tag for the app-owned Main Scanner flow. Debug-only, content-free lines. */
+        const val MAIN_SCAN_TAG = "MainScanCapture"
         const val PDF_MIME_TYPE = "application/pdf"
         const val TEXT_MIME_TYPE = "text/plain"
         const val DOC_MIME_TYPE = "application/msword"
