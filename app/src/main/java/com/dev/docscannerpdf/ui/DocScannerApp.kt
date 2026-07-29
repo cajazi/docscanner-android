@@ -2,6 +2,7 @@ package com.dev.docscannerpdf.ui
 
 import android.util.Log
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Text
@@ -30,6 +31,7 @@ import com.dev.docscannerpdf.ui.idcard.IdCardReviewScreen
 import com.dev.docscannerpdf.domain.mainscan.MainScanRouting
 import com.dev.docscannerpdf.domain.mainscan.PrimaryScanTarget
 import com.dev.docscannerpdf.ui.mainscan.MainScanCropHostScreen
+import com.dev.docscannerpdf.ui.mainscan.MainScanDiscardDialog
 import com.dev.docscannerpdf.ui.mainscan.MainScannerCaptureScreen
 import com.dev.docscannerpdf.ui.idcard.PassportGuidedCaptureScreen
 import com.dev.docscannerpdf.ui.idcard.PassportCropEditorScreen
@@ -118,10 +120,23 @@ internal fun DocScannerApp(host: MainActivity) {
                     // showing can never be replaced by a re-mounted preview. A page URI is
                     // guaranteed non-null here by resolveAppSurface, so this surface can never be
                     // reached without pixels to display.
-                    MainScanCropHostScreen(
-                        pageUri = host.mainScanState.pendingPage!!.uri,
-                        onBack = host::requestMainScanDiscard
-                    )
+                    Box {
+                        MainScanCropHostScreen(
+                            pageUri = host.mainScanState.pendingPage!!.uri,
+                            onBack = host::requestMainScanDiscard
+                        )
+                        // Back on THIS surface raises the same discard decision the capture surface
+                        // raises, so it must be answered here too. Without this the flag was set and
+                        // nothing appeared, leaving Back inert and the crop screen impossible to
+                        // exit: the following press cancelled the invisible dialog, so presses
+                        // alternated between two unseen states forever.
+                        if (host.mainScanState.discardConfirmVisible) {
+                            MainScanDiscardDialog(
+                                onCancel = host::cancelMainScanDiscard,
+                                onDiscard = host::confirmMainScanDiscard
+                            )
+                        }
+                    }
                 } else if (topSurface == AppSurface.MAIN_SCAN_CAPTURE) {
                     // Near-modal priority, same rationale as ID-card/passport capture: the
                     // app-owned Main Scanner CameraX session must never be replaced by a lower

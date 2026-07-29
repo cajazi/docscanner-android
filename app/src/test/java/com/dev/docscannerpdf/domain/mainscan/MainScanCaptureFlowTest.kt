@@ -290,4 +290,46 @@ class MainScanCaptureFlowTest {
             published.pendingPage
         )
     }
+
+    // --- Back on the crop surface must be answerable -----------------------------------------------
+
+    /**
+     * Back from a captured page raises a decision that SOMETHING must then answer.
+     *
+     * On device this was inert: the crop surface set this flag and rendered no dialog, so Back had no
+     * visible effect. Worse, the next Back press cancelled the invisible dialog, so the two presses
+     * alternated between unseen states and the crop screen could not be left at all.
+     *
+     * The rendering fix lives in the composition, but this pins the state contract it relies on: the
+     * flag really is raised, cancelling really does clear it, and neither transition quietly drops
+     * the captured page — so a surface that renders the dialog can always resolve it.
+     */
+    @Test
+    fun backFromACapturedPageRaisesAResolvableDiscardDecision() {
+        val (captured, _) = capture(visit)
+        assertTrue("a captured page must require confirmation", captured.hasPendingPage)
+        assertTrue(MainScanCaptureFlow.backNeedsConfirmation(captured))
+
+        val asking = MainScanCaptureFlow.requestDiscard(captured)
+        assertTrue("Back must raise the decision", asking.discardConfirmVisible)
+        assertNotNull("the page survives the question", asking.pendingPage)
+
+        val cancelled = MainScanCaptureFlow.cancelDiscard(asking)
+        assertFalse(cancelled.discardConfirmVisible)
+        assertEquals("cancelling loses nothing", captured.pendingPage, cancelled.pendingPage)
+
+        // The alternation the missing dialog produced must remain harmless: however many times the
+        // question is raised and dismissed, the captured page is still there to act on.
+        var cycled = cancelled
+        repeat(3) {
+            cycled = MainScanCaptureFlow.cancelDiscard(MainScanCaptureFlow.requestDiscard(cycled))
+        }
+        assertEquals(captured.pendingPage, cycled.pendingPage)
+
+        // And confirming genuinely ends the visit rather than returning to the same question.
+        val discarded = MainScanCaptureFlow.confirmDiscard(MainScanCaptureFlow.requestDiscard(cycled))
+        assertFalse(discarded.discardConfirmVisible)
+        assertNull(discarded.pendingPage)
+        assertNotEquals(captured.sessionId, discarded.sessionId)
+    }
 }
