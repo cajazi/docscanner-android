@@ -370,9 +370,15 @@ private fun MainScanCaptureControls(
 /**
  * The discard confirmation the reference raises on Back once something would be lost. Cancel is
  * neutral; the destructive action is accent-filled and unambiguous.
+ *
+ * INTERNAL, not private: Back raises the same `discardConfirmVisible` decision from both the capture
+ * and the crop surface, so both must be able to answer it. While this was private to this file the
+ * crop surface set the flag and rendered nothing, so Back had no visible effect — and because the
+ * next Back press cancelled the invisible dialog, the two presses alternated between unseen states
+ * and the crop screen could not be left at all.
  */
 @Composable
-private fun MainScanDiscardDialog(
+internal fun MainScanDiscardDialog(
     onCancel: () -> Unit,
     onDiscard: () -> Unit
 ) {
