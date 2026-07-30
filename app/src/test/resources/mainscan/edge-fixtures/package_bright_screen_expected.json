@@ -1,0 +1,36 @@
+{
+  "scene": "BNC package lying on a bright tiled floor, photographed from above at a slight angle",
+  "why": "Physical QA failure. The guide was visible in only 19 of 1214 analysed frames (1.6%) on this exact scene, and the crop polygon locked onto an edge inside the package instead of its outer boundary. Every synthetic fixture used a clean object on a uniform background, which is why none of them reproduced it: here the floor carries many long, strong, straight grout lines at several angles, and they compete directly with the package's own edges in the Hough stage.",
+  "detectorInput": {
+    "width": 240,
+    "height": 180,
+    "rotationDegrees": 90,
+    "sourceBufferWidth": 640,
+    "sourceBufferHeight": 480,
+    "sourceAspectRatio": "4:3",
+    "format": "8-bit binary PGM (P5) — the raw luma plane",
+    "normalization": "none applied to the stored file; the detector performs its own local normalization",
+    "provenance": "written by MainScanFixtureExporter from the exact LumaFrame handed to the detector"
+  },
+  "checksums": {
+    "package_bright_screen_01.pgm": "28FCA399B8DB954E",
+    "package_bright_screen_02.pgm": "1A887E8F30AFF52C",
+    "package_bright_screen_03.pgm": "1610FCF2DB7DF4AD"
+  },
+  "groundTruth": {
+    "note": "Normalized to the 240x180 fixture. Read off a 5x magnified grid render of frame 01; the scene is near-static across the three frames, so the same annotation applies to all with a slightly wider tolerance.",
+    "annotatedFrom": "package_bright_screen_01.pgm",
+    "topLeft": [0.310, 0.413],
+    "topRight": [0.686, 0.374],
+    "bottomRight": [0.669, 0.749],
+    "bottomLeft": [0.326, 0.777],
+    "toleranceNormalized": 0.07,
+    "sequenceToleranceNormalized": 0.09
+  },
+  "prohibited": {
+    "note": "Regions the polygon must NOT latch onto. These are the failure modes actually observed, not hypotheticals.",
+    "fullFrame": "must not fall back to image bounds while the package is plainly detectable",
+    "floorGroutLines": "the long tile seams crossing the frame must not supply any side",
+    "packageInterior": "the boundary between the package's red panel and its yellow bands must not be used in place of the outer edge"
+  }
+}
