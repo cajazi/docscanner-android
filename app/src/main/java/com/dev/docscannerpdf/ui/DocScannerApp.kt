@@ -12,6 +12,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
+import androidx.core.net.toUri
 import androidx.lifecycle.lifecycleScope
 import com.dev.docscannerpdf.BuildConfig
 import com.dev.docscannerpdf.MainActivity
@@ -28,10 +29,17 @@ import com.dev.docscannerpdf.domain.idscan.IdentityDocumentMode
 import com.dev.docscannerpdf.ui.idcard.CameraOwnershipLog
 import com.dev.docscannerpdf.ui.idcard.IdCardGuidedCaptureScreen
 import com.dev.docscannerpdf.ui.idcard.IdCardReviewScreen
+import com.dev.docscannerpdf.domain.mainscan.MainScanCropEditor
+import com.dev.docscannerpdf.domain.mainscan.MainScanPolygonSource
 import com.dev.docscannerpdf.domain.mainscan.MainScanRouting
+import com.dev.docscannerpdf.domain.mainscan.MainScanStage
 import com.dev.docscannerpdf.domain.mainscan.PrimaryScanTarget
+import com.dev.docscannerpdf.ui.mainscan.MainScanCropEditorScreen
 import com.dev.docscannerpdf.ui.mainscan.MainScanCropHostScreen
 import com.dev.docscannerpdf.ui.mainscan.MainScanDiscardDialog
+import com.dev.docscannerpdf.ui.mainscan.MainScanEnhancementReviewScreen
+import com.dev.docscannerpdf.ui.mainscan.MainScanFailureScreen
+import com.dev.docscannerpdf.ui.mainscan.MainScanProcessingScreen
 import com.dev.docscannerpdf.ui.mainscan.MainScannerCaptureScreen
 import com.dev.docscannerpdf.ui.idcard.PassportGuidedCaptureScreen
 import com.dev.docscannerpdf.ui.idcard.PassportCropEditorScreen
@@ -120,11 +128,60 @@ internal fun DocScannerApp(host: MainActivity) {
                     // showing can never be replaced by a re-mounted preview. A page URI is
                     // guaranteed non-null here by resolveAppSurface, so this surface can never be
                     // reached without pixels to display.
+                    // Which surface composes is decided ONLY by the workflow stage, so a progress
+                    // overlay can never appear without its image and the editor can never appear
+                    // before the polygon is resolved.
+                    val pendingUri = host.mainScanState.pendingPage!!.uri
+                    val seed = host.mainScanState.frozenCropSeed
+                    LaunchedEffect(pendingUri) {
+                        host.prepareMainScanCrop(pendingUri.toUri(), seed)
+                    }
                     Box {
-                        MainScanCropHostScreen(
-                            pageUri = host.mainScanState.pendingPage!!.uri,
-                            onBack = host::requestMainScanDiscard
-                        )
+                        when (host.mainScanStage) {
+                            // Decode and polygon resolution: the captured JPEG is shown straight
+                            // from disk with a small centred indicator over it, so the surface has
+                            // real pixels from the first frame rather than a spinner on black.
+                            MainScanStage.CropPreparing, MainScanStage.CaptureAccepted ->
+                                MainScanCropHostScreen(
+                                    pageUri = pendingUri,
+                                    onBack = host::requestMainScanDiscard
+                                )
+                            MainScanStage.Cropping -> MainScanProcessingScreen(
+                                image = host.mainScanWorkingImage?.bitmap,
+                                label = "Cropping image…"
+                            )
+                            MainScanStage.EnhancementPreparing -> MainScanProcessingScreen(
+                                image = host.mainScanCroppedImage
+                                    ?: host.mainScanWorkingImage?.bitmap,
+                                label = "Enhancing image…"
+                            )
+                            MainScanStage.EnhancementReview -> MainScanEnhancementReviewScreen(
+                                enhanced = host.mainScanEnhancedImage,
+                                cropped = host.mainScanCroppedImage,
+                                onBack = host::backFromMainScanReview
+                            )
+                            // The capture could not be decoded, so there is no image and no polygon.
+                            // This must NOT fall through to the crop editor: its empty-image branch
+                            // is an indeterminate spinner with no work behind it, which never
+                            // resolves. State the failure and offer the one recovery that exists.
+                            MainScanStage.Failed -> MainScanFailureScreen(
+                                message = "Couldn't open that capture. Please take the shot again.",
+                                onBackToCamera = host::confirmMainScanDiscard
+                            )
+                            else -> MainScanCropEditorScreen(
+                                image = host.mainScanWorkingImage,
+                                cropState = host.mainScanCropState
+                                    ?: MainScanCropEditor.initial(
+                                        MainScanCropEditor.fullFrame(),
+                                        MainScanPolygonSource.FULL_FRAME
+                                    ),
+                                onCropStateChange = host::onMainScanCropStateChange,
+                                onRotate = host::rotateMainScanCrop,
+                                onResetAll = host::resetMainScanCropToFullFrame,
+                                onNext = host::advanceMainScanCrop,
+                                onBack = host::requestMainScanDiscard
+                            )
+                        }
                         // Back on THIS surface raises the same discard decision the capture surface
                         // raises, so it must be answered here too. Without this the flag was set and
                         // nothing appeared, leaving Back inert and the crop screen impossible to

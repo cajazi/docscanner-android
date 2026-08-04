@@ -38,6 +38,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -48,8 +49,10 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
@@ -57,7 +60,12 @@ import com.dev.docscannerpdf.domain.idscan.IdCardCaptureShutterGate
 import com.dev.docscannerpdf.domain.mainscan.MainScanCameraLifecycle
 import com.dev.docscannerpdf.domain.mainscan.MainScanCameraState
 import com.dev.docscannerpdf.domain.mainscan.MainScanCaptureState
+import com.dev.docscannerpdf.domain.mainscan.MainScanAnalysisResult
 import com.dev.docscannerpdf.domain.mainscan.MainScanCaptureTicket
+import com.dev.docscannerpdf.domain.mainscan.MainScanDetectionMapper
+import com.dev.docscannerpdf.domain.mainscan.MainScanGuideEligibility
+import com.dev.docscannerpdf.domain.mainscan.MainScanGuideVisibility
+import com.dev.docscannerpdf.domain.mainscan.MainScanGuideVisibilityReducer
 import com.dev.docscannerpdf.domain.mainscan.MainScanTrace
 import kotlinx.coroutines.delay
 import com.dev.docscannerpdf.ui.idcard.DarkSystemBarsEffect
@@ -80,9 +88,11 @@ private const val CAPTURE_CALLBACK_TIMEOUT_MS = 15_000L
  *
  * Behavioural contract, taken from `docs/main-scanner-reference.md`:
  *
- * - **Clean preview.** The camera fills the screen with NOTHING drawn over it — no quadrilateral,
- *   no guide frame, no corner brackets, no confidence readout. Silent detection runs inside
- *   [MainScannerCameraController] and never reaches this composable.
+ * - **Clean preview, with a conditional guide.** The camera fills the screen. Nothing is drawn over
+ *   it except the chrome and — only while a valid, stable, confident document boundary exists — the
+ *   detection guide. There is no permanent frame, no corner brackets over empty scenes and no
+ *   confidence readout; when nothing is reliably detected the preview is completely unobstructed.
+ *   The guide is touch-transparent, so it can never intercept a shutter tap.
  * - **Manual shutter is first-class.** It is armed whenever no capture is in flight and no dialog
  *   is open. It is never disabled by resolution support, detection state, or document presence.
  * - **The shutter reacts immediately.** The accent ring pulses on the DOWN of the tap, driven by
@@ -104,7 +114,7 @@ private const val CAPTURE_CALLBACK_TIMEOUT_MS = 15_000L
 fun MainScannerCaptureScreen(
     outputDirectory: File,
     state: MainScanCaptureState,
-    onCaptureStarted: () -> MainScanCaptureTicket?,
+    onCaptureStarted: (seedCandidate: MainScanAnalysisResult?, guideVisible: Boolean) -> MainScanCaptureTicket?,
     onCaptureSucceeded: (ticket: MainScanCaptureTicket, uri: android.net.Uri) -> Unit,
     onCaptureFailed: (ticket: MainScanCaptureTicket) -> Unit,
     onCaptureTimedOut: (ticket: MainScanCaptureTicket) -> Unit,
@@ -172,6 +182,32 @@ fun MainScannerCaptureScreen(
         controller.ensurePreviewStreaming()
     }
 
+    // The live detection, collected on the main thread. The analysis thread only ever assigns to the
+    // controller's flow; nothing it does reaches Compose state directly.
+    val analysisResult by controller.analysis.collectAsState()
+
+    // Guide visibility, debounced. Folding each verdict through the pure reducer is what keeps the
+    // outline from strobing at the eligibility boundary.
+    var guideVisibility by remember { mutableStateOf(MainScanGuideVisibility()) }
+    LaunchedEffect(analysisResult?.generation) {
+        val result = analysisResult
+        val eligible = MainScanGuideEligibility.isEligible(result)
+        guideVisibility = MainScanGuideVisibilityReducer.update(guideVisibility, eligible)
+        MainScanTrace.guideEvaluated(
+            rotationDegrees = result?.rotationDegrees ?: -1,
+            frameWidth = result?.analysisFrame?.width ?: 0,
+            frameHeight = result?.analysisFrame?.height ?: 0,
+            guideVisible = guideVisibility.visible,
+            confidenceBucket = MainScanTrace.confidenceBucket(result?.confidence ?: 0f),
+            stable = result?.isStable == true,
+            mappingGeneration = result?.generation ?: 0L
+        )
+    }
+    // Leaving the surface must not carry a stale guide into the next visit.
+    DisposableEffect(Unit) {
+        onDispose { guideVisibility = MainScanGuideVisibilityReducer.reset() }
+    }
+
     var hasPermission by remember {
         mutableStateOf(
             ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) ==
@@ -192,7 +228,13 @@ fun MainScannerCaptureScreen(
             MainScanTrace.shutterRejected(reason = "gate_busy")
             return
         }
-        val ticket = onCaptureStarted()
+        // Read the newest analysis ONCE, here, and hand it to the reducer to freeze against the
+        // ticket. Reading it later — in the capture callback, say — would seed the crop from a frame
+        // taken after the exposure, which is not what the user saw when they pressed the shutter.
+        // A null or ineligible value is normal and simply yields a full-frame crop. The guide's
+        // VISIBILITY travels with it: a seed may only be frozen from a boundary the user was
+        // actually shown, never from a quad that merely happened to qualify on this one frame.
+        val ticket = onCaptureStarted(analysisResult, guideVisibility.visible)
         if (ticket == null) {
             shutterGate.onCaptureFinished()
             return
@@ -244,12 +286,42 @@ fun MainScannerCaptureScreen(
                 onBack = onBack
             )
         } else {
-            // The clean preview. Nothing is composed above it except the chrome bars.
+            // The clean preview. Above it sits only the chrome and, when a document is genuinely
+            // detected and stable, the guide — which is touch-transparent and never permanent.
+            var viewportSize by remember { mutableStateOf(IntSize.Zero) }
             AndroidView(
-                modifier = Modifier.fillMaxSize(),
+                modifier = Modifier
+                    .fillMaxSize()
+                    .onSizeChanged { viewportSize = it },
                 factory = { ctx ->
                     PreviewView(ctx).also { view -> controller.bind(view) }
                 }
+            )
+
+            // Map at draw time from the already-rotated normalized quad onto the MEASURED viewport,
+            // including PreviewView's fill/centre-crop offsets. The mapping lives in the tested pure
+            // mapper; this call site only supplies the measured size.
+            val mappedQuad = remember(analysisResult?.generation, viewportSize) {
+                val result = analysisResult
+                val quad = result?.quad
+                if (quad == null || viewportSize.width <= 0 || viewportSize.height <= 0) {
+                    null
+                } else {
+                    MainScanDetectionMapper.mapToViewport(
+                        rotatedQuad = quad,
+                        rotatedFrame = MainScanDetectionMapper.rotatedFrameSize(
+                            size = result.analysisFrame,
+                            rotationDegrees = result.rotationDegrees
+                        ),
+                        viewportWidth = viewportSize.width.toFloat(),
+                        viewportHeight = viewportSize.height.toFloat()
+                    )
+                }
+            }
+            MainScanGuideOverlay(
+                quad = mappedQuad,
+                visible = guideVisibility.visible,
+                modifier = Modifier.fillMaxSize()
             )
 
             MainScanCaptureTopBar(

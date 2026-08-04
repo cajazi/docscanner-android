@@ -92,6 +92,59 @@ object MainScanTrace {
     fun cropMounted(hasPageUri: Boolean) =
         log("MAIN_SCAN_CROP mounted=true hasPageUri=$hasPageUri")
 
+    // --- live detection -------------------------------------------------------------------------
+
+    /**
+     * One line per evaluated analysis frame. Every field is a number, a boolean or a fixed bucket
+     * label — there is deliberately no parameter that could carry a corner coordinate, a pixel
+     * sample, a path or a file name, so the live pipeline cannot leak image content through tracing.
+     */
+    fun guideEvaluated(
+        rotationDegrees: Int,
+        frameWidth: Int,
+        frameHeight: Int,
+        guideVisible: Boolean,
+        confidenceBucket: String,
+        stable: Boolean,
+        mappingGeneration: Long
+    ) = log(
+        "MAIN_SCAN_GUIDE rotation=$rotationDegrees frame=${frameWidth}x$frameHeight " +
+            "visible=$guideVisible confidence=$confidenceBucket stable=$stable " +
+            "generation=$mappingGeneration"
+    )
+
+    /**
+     * Buckets a confidence into a coarse label. Deliberately not the raw value: a per-frame float
+     * stream is both noisy and a finer-grained signal about scene content than tracing needs.
+     */
+    fun confidenceBucket(confidence: Float): String = when {
+        confidence <= 0f -> "none"
+        confidence < 0.4f -> "low"
+        confidence < 0.6f -> "medium"
+        confidence < 0.8f -> "high"
+        else -> "very_high"
+    }
+
+    /** Emitted once per accepted shutter: whether the crop opens on detected corners or full frame. */
+    fun cropSeedFrozen(sessionId: Long, generation: Long, seeded: Boolean) =
+        log("MAIN_SCAN_CROP_SEED session=$sessionId generation=$generation seeded=$seeded")
+
+    // --- crop / processing pipeline ---------------------------------------------------------------
+
+    /**
+     * The crop stage is ready. [polygonSource] is an enum name, and the dimensions are the working
+     * image's — no path, no file name, no pixel content can pass through here.
+     */
+    fun cropPrepared(polygonSource: String, imageWidth: Int, imageHeight: Int) =
+        log("MAIN_SCAN_CROP_READY polygonSource=$polygonSource image=${imageWidth}x$imageHeight")
+
+    /** A processing stage failed. [stage] is a fixed literal chosen at the call site. */
+    fun processingFailed(stage: String) = log("MAIN_SCAN_PROCESSING failed=true stage=$stage")
+
+    /** The enhancement review was reached, and whether enhancement itself succeeded. */
+    fun reviewReached(enhanced: Boolean) =
+        log("MAIN_SCAN_REVIEW reached=true enhanced=$enhanced")
+
     fun cropImageState(state: String) = log("MAIN_SCAN_CROP imageState=$state")
 
     // --- lifecycle ------------------------------------------------------------------------------

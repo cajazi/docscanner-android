@@ -135,13 +135,25 @@ import com.dev.docscannerpdf.domain.idscan.PassportTimingLog
 import com.dev.docscannerpdf.domain.idscan.PassportFailureStage
 import com.dev.docscannerpdf.domain.idscan.PassportWatermarkRenderer
 import androidx.core.net.toUri
+import com.dev.docscannerpdf.domain.mainscan.MainScanAnalysisResult
 import com.dev.docscannerpdf.domain.mainscan.MainScanCaptureFlow
+import com.dev.docscannerpdf.domain.mainscan.MainScanCropEditor
+import com.dev.docscannerpdf.domain.mainscan.MainScanCropSeed
+import com.dev.docscannerpdf.domain.mainscan.MainScanCropSeeding
+import com.dev.docscannerpdf.domain.mainscan.MainScanCropState
+import com.dev.docscannerpdf.domain.mainscan.MainScanPolygonResolver
+import com.dev.docscannerpdf.domain.mainscan.MainScanRotation
+import com.dev.docscannerpdf.domain.mainscan.MainScanStage
+import com.dev.docscannerpdf.domain.mainscan.MainScanWorkflow
 import com.dev.docscannerpdf.domain.mainscan.MainScanCaptureState
 import com.dev.docscannerpdf.domain.mainscan.MainScanCaptureTicket
 import com.dev.docscannerpdf.domain.mainscan.MainScanFileOwnership
 import com.dev.docscannerpdf.domain.mainscan.MainScanPageSource
 import com.dev.docscannerpdf.domain.mainscan.MainScanTrace
 import com.dev.docscannerpdf.ui.crop.CropImageProcessor
+import com.dev.docscannerpdf.ui.mainscan.MainScanCaptureImageLoader
+import com.dev.docscannerpdf.ui.mainscan.MainScanCaptureProcessor
+import com.dev.docscannerpdf.ui.mainscan.MainScanWorkingImage
 import com.dev.docscannerpdf.ui.detection.LumaFrameFactory
 import com.dev.docscannerpdf.ui.DocScannerApp
 import com.dev.docscannerpdf.util.AppConstants
@@ -1374,6 +1386,9 @@ class MainActivity : FragmentActivity() {
         val abandoned = mainScanState
         showMainScanCapture = false
         mainScanState = MainScanCaptureFlow.beginVisit(abandoned)
+        // The visit is over, so its in-memory pipeline must go with it — otherwise the working,
+        // cropped and enhanced bitmaps and the polygon outlive the page they belong to.
+        clearMainScanPipeline()
         sweepMainScanSession(previousState = abandoned, retainUris = emptySet())
     }
 
@@ -1382,8 +1397,16 @@ class MainActivity : FragmentActivity() {
      * capture screen must carry through its async result, or null when the reducer rejects the tap
      * (a capture is already in flight, a hand-off is routing, or the discard dialog is open).
      */
-    internal fun onMainScanCaptureStarted(): MainScanCaptureTicket? {
-        val issued = MainScanCaptureFlow.beginCapture(mainScanState)
+    internal fun onMainScanCaptureStarted(
+        seedCandidate: MainScanAnalysisResult?,
+        guideVisible: Boolean
+    ): MainScanCaptureTicket? {
+        val issued = MainScanCaptureFlow.beginCapture(
+            state = mainScanState,
+            seedCandidate = seedCandidate,
+            guideVisible = guideVisible,
+            timestampMs = System.currentTimeMillis()
+        )
         if (issued == null) {
             MainScanTrace.shutterRejected(reason = "reducer_busy_or_dialog")
             return null
@@ -1391,6 +1414,12 @@ class MainActivity : FragmentActivity() {
         val (next, ticket) = issued
         mainScanState = next
         MainScanTrace.shutterAccepted(ticket.sessionId, ticket.generation)
+        // The seed is frozen inside beginCapture, against this exact ticket, and is never revisited.
+        MainScanTrace.cropSeedFrozen(
+            sessionId = ticket.sessionId,
+            generation = ticket.generation,
+            seeded = MainScanCropSeeding.hasUsableSeed(next.frozenCropSeed, ticket)
+        )
         return ticket
     }
 
@@ -1479,6 +1508,183 @@ class MainActivity : FragmentActivity() {
         startDocumentScanner(pageLimit = 20)
     }
 
+    // ---- Main Scanner crop / processing pipeline ------------------------------------------------
+    //
+    // Runs entirely pre-persistence: nothing here writes a Room row, and no document or page exists
+    // until an explicit Confirm arrives in a later pass. Bitmaps live in memory for the visit and
+    // are released on discard; the captured JPEG on disk is never modified by any stage.
+
+    /** The stage the captured page is at. Drives which crop-surface content is composed. */
+    internal var mainScanStage by mutableStateOf(MainScanStage.CameraReady)
+
+    /** The EXIF-upright working copy of the accepted capture. */
+    internal var mainScanWorkingImage by mutableStateOf<MainScanWorkingImage?>(null)
+
+    /** Polygon editing state. Null until the working image and initial polygon are resolved. */
+    internal var mainScanCropState by mutableStateOf<MainScanCropState?>(null)
+
+    /** The perspective-corrected page, and the enhanced render of it. */
+    internal var mainScanCroppedImage by mutableStateOf<Bitmap?>(null)
+    internal var mainScanEnhancedImage by mutableStateOf<Bitmap?>(null)
+
+    private var mainScanProcessingJob: Job? = null
+
+    /**
+     * Prepares the crop stage for a freshly accepted page: decode EXIF-upright off the main thread,
+     * then resolve the initial polygon through the proven-seed / still-detection / full-frame
+     * priority. The surface shows the retained capture throughout — never a blank frame.
+     */
+    internal fun prepareMainScanCrop(pageUri: Uri, seed: MainScanCropSeed?) {
+        mainScanStage = MainScanStage.CropPreparing
+        mainScanProcessingJob?.cancel()
+        mainScanProcessingJob = lifecycleScope.launch {
+            val working = MainScanCaptureImageLoader.load(this@MainActivity, pageUri)
+            if (working == null) {
+                MainScanTrace.processingFailed(stage = "decode")
+                mainScanStage = MainScanStage.Failed
+                viewModel.showError("Couldn't open that capture. Please try again.")
+                return@launch
+            }
+            mainScanWorkingImage = working
+
+            // Detection on the still is only run when the live seed cannot be proven to map onto
+            // this image, so the common path costs nothing extra.
+            val needsDetection = MainScanPolygonResolver.needsStillDetection(
+                seed = seed,
+                captureWidth = working.width,
+                captureHeight = working.height
+            )
+            val stillQuad = if (needsDetection) {
+                MainScanCaptureProcessor.detectOnCapture(working.bitmap)
+            } else {
+                null
+            }
+            val resolved = MainScanPolygonResolver.resolve(
+                seed = seed,
+                captureWidth = working.width,
+                captureHeight = working.height,
+                stillDetection = stillQuad
+            )
+            mainScanCropState = MainScanCropEditor.initial(resolved.quad, resolved.source)
+            mainScanStage = MainScanStage.CropEditing
+            MainScanTrace.cropPrepared(
+                polygonSource = resolved.source.name,
+                imageWidth = working.width,
+                imageHeight = working.height
+            )
+        }
+    }
+
+    /** Live polygon updates from the editor's drag gestures. */
+    internal fun onMainScanCropStateChange(next: MainScanCropState) {
+        if (!MainScanWorkflow.allowsPolygonEditing(mainScanStage)) return
+        mainScanCropState = next
+    }
+
+    /**
+     * Left / Right. Rotates the working IMAGE and the polygon together — turning only one would
+     * leave the user dragging corners that no longer sit on the document.
+     */
+    internal fun rotateMainScanCrop(direction: MainScanRotation) {
+        if (!MainScanWorkflow.allowsPolygonEditing(mainScanStage)) return
+        val working = mainScanWorkingImage ?: return
+        val state = mainScanCropState ?: return
+        mainScanProcessingJob?.cancel()
+        mainScanProcessingJob = lifecycleScope.launch {
+            val rotated = MainScanCaptureProcessor.rotate(
+                bitmap = working.bitmap,
+                clockwise = direction == MainScanRotation.RIGHT
+            ) ?: return@launch
+            val previous = working.bitmap
+            mainScanWorkingImage = MainScanWorkingImage(rotated, rotated.width, rotated.height)
+            mainScanCropState = MainScanCropEditor.rotate(state, direction)
+            // Compose has swapped to the new bitmap in the same frame this state change causes.
+            if (previous !== rotated) runCatching { previous.recycle() }
+        }
+    }
+
+    /** All — the polygon returns to the complete image bounds. */
+    internal fun resetMainScanCropToFullFrame() {
+        if (!MainScanWorkflow.allowsPolygonEditing(mainScanStage)) return
+        mainScanCropState = mainScanCropState?.let(MainScanCropEditor::resetToFullFrame)
+    }
+
+    /**
+     * Next — validates the polygon, then runs a genuine perspective correction followed by
+     * enhancement, both off the main thread. The page stays on screen behind each overlay.
+     */
+    internal fun advanceMainScanCrop() {
+        val state = mainScanCropState ?: return
+        val working = mainScanWorkingImage ?: return
+        if (!MainScanWorkflow.allowsAdvanceFromCrop(
+                stage = mainScanStage,
+                polygonValid = MainScanCropEditor.isApplicable(state)
+            )
+        ) {
+            return
+        }
+        mainScanStage = MainScanStage.Cropping
+        mainScanProcessingJob?.cancel()
+        mainScanProcessingJob = lifecycleScope.launch {
+            val cropped = MainScanCaptureProcessor.perspectiveCrop(working.bitmap, state.quad)
+            if (cropped == null) {
+                MainScanTrace.processingFailed(stage = "perspective_crop")
+                // The capture is untouched; the user returns to editing and can adjust.
+                mainScanStage = MainScanStage.CropEditing
+                viewModel.showError("Couldn't apply that crop. Please adjust and try again.")
+                return@launch
+            }
+            mainScanCroppedImage = cropped
+            mainScanStage = MainScanStage.EnhancementPreparing
+
+            val enhanced = MainScanCaptureProcessor.applyFilter(cropped, DocumentFilter.ENHANCE)
+            if (enhanced == null) {
+                MainScanTrace.processingFailed(stage = "enhance")
+                // Enhancement is an improvement, not a requirement: fall back to the true cropped
+                // page rather than stranding the user, and say nothing misleading about it.
+                mainScanEnhancedImage = null
+            } else {
+                mainScanEnhancedImage = enhanced
+            }
+            mainScanStage = MainScanStage.EnhancementReview
+            MainScanTrace.reviewReached(enhanced = enhanced != null)
+        }
+    }
+
+    /** Back from the enhancement review returns to crop editing without losing the polygon. */
+    internal fun backFromMainScanReview() {
+        if (mainScanStage != MainScanStage.EnhancementReview) return
+        releaseMainScanDerivedImages()
+        mainScanStage = MainScanStage.CropEditing
+    }
+
+    /** Releases the derived bitmaps. The captured original and its working copy are kept. */
+    private fun releaseMainScanDerivedImages() {
+        mainScanEnhancedImage = null
+        mainScanCroppedImage = null
+    }
+
+    /**
+     * Tears the crop/processing pipeline down for a finished or discarded visit. Only in-memory
+     * bitmaps are dropped — the accepted capture on disk is handled by the capture session's own
+     * ownership ledger.
+     *
+     * Called from BOTH visit-ending paths ([confirmMainScanDiscard] and [closeMainScanCapture]).
+     * Without that, a discarded visit left its full-resolution working, cropped and enhanced bitmaps
+     * — and its polygon — reachable from the activity, so the next visit started holding the
+     * previous page's pixels in memory and could compose a stale crop state before its own decode
+     * finished.
+     */
+    private fun clearMainScanPipeline() {
+        mainScanProcessingJob?.cancel()
+        mainScanProcessingJob = null
+        mainScanEnhancedImage = null
+        mainScanCroppedImage = null
+        mainScanWorkingImage = null
+        mainScanCropState = null
+        mainScanStage = MainScanStage.CameraReady
+    }
+
     /**
      * The SINGLE Back decision for the Main Scanner, used by both the on-screen close affordance
      * and system/predictive Back so the two can never diverge: confirm when something would be
@@ -1514,6 +1720,9 @@ class MainActivity : FragmentActivity() {
         val hadCapturedPage = abandoned.pendingPage != null
         mainScanState = MainScanCaptureFlow.confirmDiscard(abandoned)
         showMainScanCapture = hadCapturedPage
+        // Discarding destroys the page, so nothing derived from it may survive: the returning camera
+        // must not hold the discarded visit's bitmaps or reopen on its polygon.
+        clearMainScanPipeline()
         sweepMainScanSession(previousState = abandoned, retainUris = emptySet())
         if (BuildConfig.DEBUG) {
             val destination = if (hadCapturedPage) "MAIN_SCAN_CAPTURE" else "DASHBOARD"
