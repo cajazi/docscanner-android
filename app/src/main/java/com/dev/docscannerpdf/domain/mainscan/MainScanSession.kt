@@ -1,5 +1,7 @@
 package com.dev.docscannerpdf.domain.mainscan
 
+import com.dev.docscannerpdf.domain.crop.PerspectiveQuad
+
 /**
  * Where a pending Main Scanner page came from. Kept explicit (not a boolean) so the crop surface
  * can tell a camera capture from a gallery import without inspecting the URI, and so a future
@@ -21,7 +23,13 @@ enum class MainScanPageSource { CAMERA, IMPORT }
 data class MainScanPendingPage(
     val uri: String,
     val source: MainScanPageSource,
-    val captureGeneration: Long
+    val captureGeneration: Long,
+    /**
+     * The corners the crop surface should open on, in ROTATED normalized space. Defaults to the full
+     * frame, which is what an undetected or unstable capture correctly resolves to — a crop is never
+     * seeded with corners that were not proven to belong to this capture.
+     */
+    val cropSeedQuad: PerspectiveQuad = PerspectiveQuad.full()
 )
 
 /**
@@ -77,7 +85,13 @@ data class MainScanCaptureState(
     val pendingPage: MainScanPendingPage? = null,
     val ownedUris: Set<String> = emptySet(),
     val discardConfirmVisible: Boolean = false,
-    val importInFlight: Boolean = false
+    val importInFlight: Boolean = false,
+    /**
+     * The document corners frozen when the CURRENT capture was accepted, or null when the detection
+     * was not eligible. Immutable for the life of that capture — the live detector keeps running
+     * during the exposure, so anything read later would describe a frame the user never saw.
+     */
+    val frozenCropSeed: MainScanCropSeed? = null
 ) {
     /**
      * True while a capture/import occupies the single-flight slot, or while a captured page is
@@ -122,14 +136,34 @@ object MainScanCaptureFlow {
      *
      * The stage moves to [MainScanCaptureStage.CAPTURING] but the preview is untouched — callers
      * must not blank, freeze, or unbind the preview here.
+     *
+     * [seedCandidate] is the newest analysis result at the instant of the tap and [guideVisible] is
+     * whether the guide was actually on screen. Both are frozen HERE, against the ticket this call
+     * issues, and never consulted again — see [MainScanCropSeeding.freeze], which requires the guide
+     * to have been visible so the crop can only ever open on corners the user was shown.
+     *
+     * Passing null, an ineligible result, or `guideVisible = false` is entirely normal and simply
+     * means the crop opens full-frame. None of it gates the capture itself.
      */
-    fun beginCapture(state: MainScanCaptureState): Pair<MainScanCaptureState, MainScanCaptureTicket>? {
+    fun beginCapture(
+        state: MainScanCaptureState,
+        seedCandidate: MainScanAnalysisResult? = null,
+        guideVisible: Boolean = false,
+        timestampMs: Long = 0L
+    ): Pair<MainScanCaptureState, MainScanCaptureTicket>? {
         if (!state.canCapture) return null
         val generation = state.captureGeneration + 1
+        val ticket = MainScanCaptureTicket(sessionId = state.sessionId, generation = generation)
         return state.copy(
             stage = MainScanCaptureStage.CAPTURING,
-            captureGeneration = generation
-        ) to MainScanCaptureTicket(sessionId = state.sessionId, generation = generation)
+            captureGeneration = generation,
+            frozenCropSeed = MainScanCropSeeding.freeze(
+                ticket = ticket,
+                result = seedCandidate,
+                guideVisible = guideVisible,
+                timestampMs = timestampMs
+            )
+        ) to ticket
     }
 
     /** Whether [ticket] still identifies the live visit AND its current capture. */
@@ -173,7 +207,10 @@ object MainScanCaptureFlow {
             pendingPage = MainScanPendingPage(
                 uri = uri,
                 source = source,
-                captureGeneration = ticket.generation
+                captureGeneration = ticket.generation,
+                // Resolves to the frozen corners only when the seed belongs to exactly this ticket;
+                // a seed from an earlier visit or a superseded capture yields the full frame.
+                cropSeedQuad = MainScanCropSeeding.resolveQuad(state.frozenCropSeed, ticket)
             ),
             ownedUris = state.ownedUris + uri,
             importInFlight = false

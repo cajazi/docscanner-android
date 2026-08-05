@@ -19,12 +19,21 @@ import androidx.lifecycle.LifecycleOwner
 import com.dev.docscannerpdf.BuildConfig
 import com.dev.docscannerpdf.domain.detection.FrameDropPolicy
 import com.dev.docscannerpdf.domain.detection.FrameRateLimiter
+import com.dev.docscannerpdf.domain.detection.DetectedQuad
 import com.dev.docscannerpdf.domain.detection.LiveDetectionSession
-import com.dev.docscannerpdf.domain.detection.StabilizerState
+import com.dev.docscannerpdf.domain.detection.LiveFrameAnalyzer
+import com.dev.docscannerpdf.domain.detection.DetectionConfig
+import com.dev.docscannerpdf.domain.detection.LumaFrame
 import com.dev.docscannerpdf.domain.detection.YuvLumaConverter
+import com.dev.docscannerpdf.domain.crop.PerspectiveQuad
 import com.dev.docscannerpdf.domain.idscan.IdCardCaptureSubmission
 import com.dev.docscannerpdf.domain.idscan.PreviewRecoveryGuard
+import com.dev.docscannerpdf.domain.mainscan.FrameSize
+import com.dev.docscannerpdf.domain.mainscan.MainScanAnalysisResult
 import com.dev.docscannerpdf.domain.mainscan.MainScanCameraLifecycle
+import com.dev.docscannerpdf.domain.mainscan.MainScanDetectionMapper
+import com.dev.docscannerpdf.domain.mainscan.MainScanDocumentFinder
+import com.dev.docscannerpdf.domain.mainscan.MainScanDocumentScore
 import com.dev.docscannerpdf.domain.mainscan.MainScanCameraState
 import com.dev.docscannerpdf.domain.mainscan.MainScanTrace
 import com.dev.docscannerpdf.ui.idcard.CameraOwnershipLog
@@ -33,7 +42,36 @@ import java.io.File
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicInteger
-import java.util.concurrent.atomic.AtomicReference
+import java.util.concurrent.atomic.AtomicLong
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+
+/**
+ * Builds the Main Scanner's per-frame detector, carrying the previously found quad forward.
+ *
+ * The continuity state lives in the closure rather than on the controller because the analyzer is a
+ * constructor default, which cannot reference the enclosing instance. Keeping it here also means the
+ * memory is exactly as long-lived as the detector that uses it: a fresh controller starts with no
+ * history, and losing the document clears it, so a stale quad can never bias a new scene.
+ *
+ * Real scenes routinely hold more than one true rectangle — a package held up in front of a laptop
+ * screen gives two — and their scores can be near-identical. Without this tie-breaker the finder
+ * alternates between them, tracked corner movement never falls below the stability threshold, and
+ * the guide stays hidden even though every frame detected something with high confidence.
+ */
+private fun mainScanDetector(): (LumaFrame, DetectionConfig) -> DetectedQuad? {
+    var tracked: PerspectiveQuad? = null
+    return { frame, _ ->
+        val found = MainScanDocumentFinder.find(frame, previous = tracked)
+        tracked = found
+        found?.let {
+            // Confidence IS the document-likeness score, so the guide's confidence gate and the
+            // crop resolver's ranking agree on what a good candidate is.
+            DetectedQuad(quad = it, confidence = MainScanDocumentScore.overall(it))
+        }
+    }
+}
 
 /**
  * Drives the app-owned Main Scanner capture surface: a CameraX preview, a full-resolution still
@@ -56,9 +94,11 @@ import java.util.concurrent.atomic.AtomicReference
  *    UHD attaches, because a sub-UHD card scan is unusable. A document page is not a card: the
  *    reference exposes an always-armed manual shutter, so this controller reports the attached
  *    resolution for diagnostics and lets every capture proceed.
- * 3. **Detection draws nothing.** [latestSeedState] is written from the analysis thread and read
- *    only at capture time to seed the crop polygon. It is intentionally NOT exposed as a Flow and
- *    no overlay consumes it — the reference preview is clean, with no live quadrilateral.
+ * 3. **Detection is conditional, never permanent.** [analysis] publishes one immutable result per
+ *    analysed frame. The surface shows a guide ONLY while a valid, stable, confident boundary
+ *    exists, and withdraws it otherwise — the reference preview is clean, and a polygon drawn over
+ *    an undetected scene would be a false claim that the app has found the page. The analysis thread
+ *    publishes; it never writes Compose state, and it never gates the shutter.
  *
  * Captured JPEGs are written only into the caller's [outputDirectory], always under the app's own
  * private storage — never external storage, never a `content://` target.
@@ -66,7 +106,15 @@ import java.util.concurrent.atomic.AtomicReference
 class MainScannerCameraController(
     private val context: Context,
     private val lifecycleOwner: LifecycleOwner,
-    private val detectionSession: LiveDetectionSession = LiveDetectionSession(),
+    /**
+     * The live pipeline, built on the Main Scanner's own finder rather than the legacy
+     * extreme-points detector. The legacy detector returns a quad spanning the whole frame whenever
+     * any stray foreground pixel sits near an edge, which made the live guide — and the crop seed
+     * frozen from it — describe the frame instead of the document.
+     */
+    private val detectionSession: LiveDetectionSession = LiveDetectionSession(
+        analyzer = LiveFrameAnalyzer(detect = mainScanDetector())
+    ),
     private val targetAnalysisFps: Int = 10
 ) {
     val owner: CameraSurfaceOwner = CameraSurfaceOwner.MAIN_SCAN_CAPTURE
@@ -87,17 +135,23 @@ class MainScannerCameraController(
     private var pendingFlashMode: Int = ImageCapture.FLASH_MODE_OFF
 
     /**
-     * The most recent silent detection result, or null when analysis is unavailable/undetected.
-     * Written on the analysis thread, read on the main thread at capture time — hence the atomic.
+     * The latest detection, published as ONE immutable value.
      *
-     * NOT rendered anywhere. Slice 2 adds the sensor→display coordinate mapping this needs before
-     * it can address captured pixels, and Slice 4 consumes the mapped quad to seed the crop
-     * polygon. Until then this is recorded and left unused, on purpose: the 3-use-case binding it
-     * requires is what Slice 1 must prove on real hardware.
+     * The analysis thread's entire contribution to the UI is a single assignment here. It never
+     * touches Compose state, never allocates into shared mutable structures, and never calls back
+     * into the screen — so there is no path by which a frame arriving mid-recomposition can tear
+     * state. The UI collects this flow and does its own mapping at draw time.
+     *
+     * Quads published here are already in ROTATED normalized space with corner roles restored
+     * ([MainScanDetectionMapper]), because the rotation is a property of the FRAME and only the
+     * analyzer knows it; making the UI re-derive it would mean re-doing sensor math inside a draw
+     * call, which is exactly what this design forbids.
      */
-    private val latestSeed = AtomicReference<StabilizerState?>(null)
+    private val _analysis = MutableStateFlow<MainScanAnalysisResult?>(null)
+    val analysis: StateFlow<MainScanAnalysisResult?> = _analysis.asStateFlow()
 
-    val latestSeedState: StabilizerState? get() = latestSeed.get()
+    /** Monotonic counter so a consumer can discard an out-of-order publication. */
+    private val analysisGeneration = AtomicLong(0L)
 
     /**
      * Initialization state. Starts [MainScanCameraState.BINDING]; the single bind attempt resolves it
@@ -221,7 +275,7 @@ class MainScannerCameraController(
         boundPreviewView = null
         attachedCaptureWidth = null
         attachedCaptureHeight = null
-        latestSeed.set(null)
+        _analysis.value = null
     }
 
     /**
@@ -252,15 +306,26 @@ class MainScannerCameraController(
             .apply { setAnalyzer(analysisExecutor, ::analyzeFrame) }
 
     /**
-     * Silent analysis: throttle to the target rate, drop if one frame is still in flight, convert
-     * the luma plane, fold it into the reused detection pipeline, and store the result. Publishes
-     * nothing and triggers no capture — the reference has no auto-capture and no live overlay.
+     * Analysis: throttle to the target rate, drop if one frame is still in flight, convert the luma
+     * plane, fold it into the reused detection pipeline, and publish ONE immutable result.
+     *
+     * `imageInfo.rotationDegrees` is read from the frame itself and applied here. It is not a
+     * constant and not inferrable from the UI: it is the rotation CameraX says must be applied to
+     * THIS buffer for it to appear upright, and it changes when the device rotates. Ignoring it is
+     * the classic cause of an overlay that is transposed in portrait — the detector is correct and
+     * the drawing is correct, but they disagree about which way is up.
+     *
+     * `shouldCapture` from the detection session remains deliberately IGNORED: readiness is computed
+     * and published for tracing, but auto-capture is not wired in this slice. The manual shutter is
+     * the sole trigger, and nothing here may gate it.
      */
     private fun analyzeFrame(image: ImageProxy) {
         try {
             if (!frameRateLimiter.shouldProcess(System.currentTimeMillis())) return
             if (!frameDropPolicy.tryAcquire()) return
             try {
+                val rotationDegrees = image.imageInfo.rotationDegrees
+                val analysisFrame = FrameSize(width = image.width, height = image.height)
                 val plane = image.planes[0]
                 val buffer = plane.buffer
                 val bytes = ByteArray(buffer.remaining())
@@ -273,9 +338,20 @@ class MainScannerCameraController(
                     pixelStride = plane.pixelStride
                 )
                 val result = detectionSession.process(frame)
-                // Store only. `shouldCapture` is intentionally IGNORED: auto-capture is not part of
-                // the locked reference, and the shutter is the sole trigger.
-                latestSeed.set(result.stabilizerState)
+                val stabilizer = result.stabilizerState
+                // Rotate into displayed orientation ONCE, here, where the frame's rotation is known.
+                val rotatedQuad = stabilizer.smoothedQuad?.let { quad ->
+                    MainScanDetectionMapper.rotateNormalizedQuad(quad, rotationDegrees)
+                }
+                _analysis.value = MainScanAnalysisResult(
+                    quad = rotatedQuad,
+                    analysisFrame = analysisFrame,
+                    rotationDegrees = MainScanDetectionMapper.normalizeRotation(rotationDegrees),
+                    confidence = stabilizer.confidence,
+                    isStable = stabilizer.isStable,
+                    generation = analysisGeneration.incrementAndGet(),
+                    timestampMs = System.currentTimeMillis()
+                )
             } finally {
                 frameDropPolicy.release()
             }
@@ -426,7 +502,7 @@ class MainScannerCameraController(
     /** Resets the silent detection state — call when a visit ends so no seed leaks across visits. */
     fun resetDetection() {
         detectionSession.reset()
-        latestSeed.set(null)
+        _analysis.value = null
     }
 
     /**
@@ -446,7 +522,7 @@ class MainScannerCameraController(
         cameraProvider = null
         imageCapture = null
         boundPreviewView = null
-        latestSeed.set(null)
+        _analysis.value = null
         runCatching { analysisExecutor.shutdown() }
         if (BuildConfig.DEBUG) {
             Log.d(TAG, CameraOwnershipLog.released(owner, controllerId))
