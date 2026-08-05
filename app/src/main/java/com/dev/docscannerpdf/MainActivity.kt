@@ -1595,11 +1595,15 @@ class MainActivity : FragmentActivity() {
                 bitmap = working.bitmap,
                 clockwise = direction == MainScanRotation.RIGHT
             ) ?: return@launch
-            val previous = working.bitmap
             mainScanWorkingImage = MainScanWorkingImage(rotated, rotated.width, rotated.height)
             mainScanCropState = MainScanCropEditor.rotate(state, direction)
-            // Compose has swapped to the new bitmap in the same frame this state change causes.
-            if (previous !== rotated) runCatching { previous.recycle() }
+            // The previous bitmap is deliberately NOT recycled here. Assigning the state only
+            // SCHEDULES recomposition: the display list recorded for the last frame still references
+            // the old bitmap and the render thread may replay it, so recycling now can surface as
+            // "Canvas: trying to use a recycled bitmap" — a crash that `runCatching` cannot catch,
+            // because `recycle()` itself never throws. Dropping the reference lets the pixels be
+            // reclaimed once Compose has stopped drawing them, which matches how the rest of the
+            // pipeline releases its bitmaps (see clearMainScanPipeline).
         }
     }
 

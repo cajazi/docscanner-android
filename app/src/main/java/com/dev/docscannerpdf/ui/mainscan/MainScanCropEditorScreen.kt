@@ -27,6 +27,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -162,6 +163,18 @@ private fun CropSurface(
     var containerSize by remember { mutableStateOf(IntSize.Zero) }
     val imageBitmap = remember(image.bitmap) { image.bitmap.asImageBitmap() }
 
+    // The gesture block below is keyed on the rendered geometry only, so Compose keeps the ORIGINAL
+    // suspending lambda across every recomposition that merely changes the polygon. Reading
+    // `cropState` straight from that lambda therefore reads the value captured at the first
+    // composition, in which `activeHandle` is null — `onDrag` returned immediately and no handle
+    // could ever move. These delegates always resolve to the latest composition's values.
+    //
+    // `cropState` deliberately stays OUT of the pointerInput keys: re-keying restarts
+    // `detectDragGestures`, which would cancel the very drag the user is performing on its first
+    // movement.
+    val currentCropState by rememberUpdatedState(cropState)
+    val currentOnCropStateChange by rememberUpdatedState(onCropStateChange)
+
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -206,34 +219,69 @@ private fun CropSurface(
             modifier = Modifier
                 .fillMaxSize()
                 .pointerInput(rendered, image.width, image.height) {
+                    // Authoritative per-gesture state, owned by THIS suspending coroutine. The hoisted
+                    // `rememberUpdatedState` delegates only advance on recomposition, so an `onDrag`
+                    // that arrives in the same frame as `onDragStart` — as a real quick flick produces —
+                    // would still read `currentCropState.activeHandle` as null and drop the whole drag.
+                    // Holding the active handle and the working quad locally makes every callback in a
+                    // gesture see the up-to-date value synchronously, independent of recomposition
+                    // timing, while the hoisted state is still published through onCropStateChange for
+                    // drawing and for Next.
+                    var activeHandle: MainScanCropHandle? = null
+                    var working: MainScanCropState = currentCropState
+
                     detectDragGestures(
                         onDragStart = { position ->
+                            // Re-seed from the latest hoisted state and clear any residue from a
+                            // previous gesture BEFORE hit testing. This coroutine survives unrelated
+                            // crop-state changes (e.g. Reset All), so a stale `working`/`activeHandle`
+                            // left from an earlier drag must never leak into — or be republished by —
+                            // this one.
+                            val base = currentCropState
+                            activeHandle = null
+                            working = base
                             val normalized = toNormalized(position)
                             val handle = MainScanCropEditor.handleAt(
-                                quad = cropState.quad,
+                                quad = base.quad,
                                 x = normalized.x,
                                 y = normalized.y,
                                 radius = touchRadiusNormalized
                             )
                             if (handle != null) {
-                                onCropStateChange(MainScanCropEditor.beginDrag(cropState, handle))
+                                activeHandle = handle
+                                working = MainScanCropEditor.beginDrag(base, handle)
+                                currentOnCropStateChange(working)
                             }
                         },
                         onDrag = { change, _ ->
-                            val handle = cropState.activeHandle ?: return@detectDragGestures
+                            val handle = activeHandle ?: return@detectDragGestures
                             change.consume()
                             val normalized = toNormalized(change.position)
-                            onCropStateChange(
-                                MainScanCropEditor.moveHandle(
-                                    state = cropState,
-                                    handle = handle,
-                                    x = normalized.x,
-                                    y = normalized.y
-                                )
+                            working = MainScanCropEditor.moveHandle(
+                                state = working,
+                                handle = handle,
+                                x = normalized.x,
+                                y = normalized.y
                             )
+                            currentOnCropStateChange(working)
                         },
-                        onDragEnd = { onCropStateChange(MainScanCropEditor.endDrag(cropState)) },
-                        onDragCancel = { onCropStateChange(MainScanCropEditor.endDrag(cropState)) }
+                        onDragEnd = {
+                            // Publish only when THIS gesture actually acquired a handle. An off-handle
+                            // drag must never republish a stale local polygon over a crop state that
+                            // changed externally (e.g. Reset All) while the coroutine lived on.
+                            if (activeHandle != null) {
+                                working = MainScanCropEditor.endDrag(working)
+                                currentOnCropStateChange(working)
+                            }
+                            activeHandle = null
+                        },
+                        onDragCancel = {
+                            if (activeHandle != null) {
+                                working = MainScanCropEditor.endDrag(working)
+                                currentOnCropStateChange(working)
+                            }
+                            activeHandle = null
+                        }
                     )
                 }
         ) {
