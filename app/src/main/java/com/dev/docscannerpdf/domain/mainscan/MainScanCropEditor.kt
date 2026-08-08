@@ -140,8 +140,8 @@ object MainScanCropEditor {
     }
 
     /**
-     * Moves a whole edge. The edge translates along its own normal by the distance the handle
-     * travelled from the edge's midpoint, so both of its corners move together and the opposite edge
+     * Moves a whole edge by one shared normalized translation vector from its midpoint. Both corners
+     * receive the same bounded translation and the opposite edge
      * is untouched — dragging the top edge down shortens the page without skewing it.
      */
     private fun moveEdge(
@@ -153,10 +153,18 @@ object MainScanCropEditor {
         val start = quad.corner(startCorner.toCropCorner())
         val end = quad.corner(endCorner.toCropCorner())
         val midpoint = CropPoint((start.x + end.x) / 2f, (start.y + end.y) / 2f)
-        val dx = point.x - midpoint.x
-        val dy = point.y - midpoint.y
-        val movedStart = CropPoint(start.x + dx, start.y + dy)
-        val movedEnd = CropPoint(end.x + dx, end.y + dy)
+        val requestedDx = point.x - midpoint.x
+        val requestedDy = point.y - midpoint.y
+        val legalDxMin = maxOf(-start.x, -end.x)
+        val legalDxMax = minOf(1f - start.x, 1f - end.x)
+        val legalDyMin = maxOf(-start.y, -end.y)
+        val legalDyMax = minOf(1f - start.y, 1f - end.y)
+        if (legalDxMin > legalDxMax || legalDyMin > legalDyMax) return quad
+
+        val boundedDx = requestedDx.coerceIn(legalDxMin, legalDxMax)
+        val boundedDy = requestedDy.coerceIn(legalDyMin, legalDyMax)
+        val movedStart = CropPoint(start.x + boundedDx, start.y + boundedDy)
+        val movedEnd = CropPoint(end.x + boundedDx, end.y + boundedDy)
         return quad
             .withCorner(startCorner.toCropCorner(), movedStart)
             .withCorner(endCorner.toCropCorner(), movedEnd)
