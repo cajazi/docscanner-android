@@ -89,7 +89,8 @@ object MainScanCropEditor {
     fun endDrag(state: MainScanCropState): MainScanCropState = state.copy(activeHandle = null)
 
     /**
-     * Moves the active handle to the normalized point ([x], [y]).
+     * Moves the active handle toward the normalized point ([x], [y]). Corners move directly, while
+     * edges retain only pointer travel along their normal in the current image's pixel metric.
      *
      * The proposed polygon is accepted only when it stays applicable (convex, non-degenerate, with
      * opposite edges at least [MIN_EDGE_SEPARATION] apart). A rejected move returns the state
@@ -99,16 +100,25 @@ object MainScanCropEditor {
         state: MainScanCropState,
         handle: MainScanCropHandle,
         x: Float,
-        y: Float
+        y: Float,
+        imageWidth: Int,
+        imageHeight: Int
     ): MainScanCropState {
-        val point = CropPoint(
-            x = x.coerceIn(-OUT_OF_BOUNDS_ALLOWANCE, 1f + OUT_OF_BOUNDS_ALLOWANCE),
-            y = y.coerceIn(-OUT_OF_BOUNDS_ALLOWANCE, 1f + OUT_OF_BOUNDS_ALLOWANCE)
-        )
         val proposed = if (handle.isCorner) {
+            val point = CropPoint(
+                x = x.coerceIn(-OUT_OF_BOUNDS_ALLOWANCE, 1f + OUT_OF_BOUNDS_ALLOWANCE),
+                y = y.coerceIn(-OUT_OF_BOUNDS_ALLOWANCE, 1f + OUT_OF_BOUNDS_ALLOWANCE)
+            )
             moveCorner(state.quad, handle, point)
         } else {
-            moveEdge(state.quad, handle, point)
+            if (!x.isFinite() || !y.isFinite() || imageWidth <= 0 || imageHeight <= 0) return state
+            moveEdge(
+                quad = state.quad,
+                handle = handle,
+                point = CropPoint(x, y),
+                imageWidth = imageWidth,
+                imageHeight = imageHeight
+            )
         }
         if (!isApplicable(proposed)) return state
         // Convexity and area are not sufficient on their own: dragging the top edge clean past the
@@ -140,29 +150,71 @@ object MainScanCropEditor {
     }
 
     /**
-     * Moves a whole edge by one shared normalized translation vector from its midpoint. Both corners
-     * receive the same bounded translation and the opposite edge
+     * Projects pointer displacement onto the edge normal in image pixels, then bounds that one
+     * scalar travel value so both endpoints remain inside the image. Both corners receive the same
+     * normalized translation and the opposite edge
      * is untouched — dragging the top edge down shortens the page without skewing it.
      */
     private fun moveEdge(
         quad: PerspectiveQuad,
         handle: MainScanCropHandle,
-        point: CropPoint
+        point: CropPoint,
+        imageWidth: Int,
+        imageHeight: Int
     ): PerspectiveQuad {
         val (startCorner, endCorner) = edgeCorners(handle)
         val start = quad.corner(startCorner.toCropCorner())
         val end = quad.corner(endCorner.toCropCorner())
-        val midpoint = CropPoint((start.x + end.x) / 2f, (start.y + end.y) / 2f)
-        val requestedDx = point.x - midpoint.x
-        val requestedDy = point.y - midpoint.y
-        val legalDxMin = maxOf(-start.x, -end.x)
-        val legalDxMax = minOf(1f - start.x, 1f - end.x)
-        val legalDyMin = maxOf(-start.y, -end.y)
-        val legalDyMax = minOf(1f - start.y, 1f - end.y)
-        if (legalDxMin > legalDxMax || legalDyMin > legalDyMax) return quad
+        if (!start.x.isFinite() || !start.y.isFinite() || !end.x.isFinite() || !end.y.isFinite()) {
+            return quad
+        }
 
-        val boundedDx = requestedDx.coerceIn(legalDxMin, legalDxMax)
-        val boundedDy = requestedDy.coerceIn(legalDyMin, legalDyMax)
+        val width = imageWidth.toFloat()
+        val height = imageHeight.toFloat()
+        val edgePixelX = (end.x - start.x) * width
+        val edgePixelY = (end.y - start.y) * height
+        val edgeLength = hypot(edgePixelX, edgePixelY)
+        if (!edgeLength.isFinite() || edgeLength <= DEGENERATE_PIXEL_EDGE_LENGTH) return quad
+
+        val normalPixelX = -edgePixelY / edgeLength
+        val normalPixelY = edgePixelX / edgeLength
+        val midpoint = CropPoint((start.x + end.x) / 2f, (start.y + end.y) / 2f)
+        val displacementPixelX = (point.x - midpoint.x) * width
+        val displacementPixelY = (point.y - midpoint.y) * height
+        val requestedScalar =
+            displacementPixelX * normalPixelX + displacementPixelY * normalPixelY
+        if (!requestedScalar.isFinite()) return quad
+
+        val qx = normalPixelX / width
+        val qy = normalPixelY / height
+        if (!qx.isFinite() || !qy.isFinite()) return quad
+
+        var scalarMin = Float.NEGATIVE_INFINITY
+        var scalarMax = Float.POSITIVE_INFINITY
+
+        fun intersectCoordinate(coordinate: Float, q: Float): Boolean {
+            if (q == 0f) return coordinate in 0f..1f
+            val first = -coordinate / q
+            val second = (1f - coordinate) / q
+            val lower = minOf(first, second)
+            val upper = maxOf(first, second)
+            if (!lower.isFinite() || !upper.isFinite()) return false
+            scalarMin = maxOf(scalarMin, lower)
+            scalarMax = minOf(scalarMax, upper)
+            return scalarMin <= scalarMax
+        }
+
+        if (!intersectCoordinate(start.x, qx) ||
+            !intersectCoordinate(start.y, qy) ||
+            !intersectCoordinate(end.x, qx) ||
+            !intersectCoordinate(end.y, qy)
+        ) {
+            return quad
+        }
+
+        val boundedScalar = requestedScalar.coerceIn(scalarMin, scalarMax)
+        val boundedDx = boundedScalar * qx
+        val boundedDy = boundedScalar * qy
         val movedStart = CropPoint(start.x + boundedDx, start.y + boundedDy)
         val movedEnd = CropPoint(end.x + boundedDx, end.y + boundedDy)
         return quad
@@ -260,6 +312,9 @@ object MainScanCropEditor {
 
     /** Minimum polygon area as a fraction of the image — below this there is nothing to crop to. */
     private const val MIN_AREA = 0.02f
+
+    /** Pixel-space edge lengths at or below this value have no stable normal. */
+    private const val DEGENERATE_PIXEL_EDGE_LENGTH = 1e-6f
 
     private fun midpointDistance(
         a1: CropPoint,
