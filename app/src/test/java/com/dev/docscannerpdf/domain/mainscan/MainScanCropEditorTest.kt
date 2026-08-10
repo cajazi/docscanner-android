@@ -10,6 +10,7 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import kotlin.math.hypot
 
 /**
  * Crop polygon editing. The central property under test is that the polygon can never be dragged
@@ -20,6 +21,22 @@ class MainScanCropEditorTest {
 
     private fun state(quad: PerspectiveQuad = PerspectiveQuad.inset(0.15f)) =
         MainScanCropEditor.initial(quad, MainScanPolygonSource.FROZEN_SEED)
+
+    private fun moveHandle(
+        state: MainScanCropState,
+        handle: MainScanCropHandle,
+        x: Float,
+        y: Float,
+        imageWidth: Int = 1_000,
+        imageHeight: Int = 1_000
+    ) = MainScanCropEditor.moveHandle(
+        state = state,
+        handle = handle,
+        x = x,
+        y = y,
+        imageWidth = imageWidth,
+        imageHeight = imageHeight
+    )
 
     // --- initial state ---------------------------------------------------------------------------
 
@@ -71,7 +88,7 @@ class MainScanCropEditorTest {
     @Test
     fun draggingACornerMovesOnlyThatCorner() {
         val s = state()
-        val moved = MainScanCropEditor.moveHandle(s, MainScanCropHandle.TOP_LEFT, 0.05f, 0.05f)
+        val moved = moveHandle(s, MainScanCropHandle.TOP_LEFT, 0.05f, 0.05f)
         assertEquals(CropPoint(0.05f, 0.05f), moved.quad.topLeft)
         assertEquals("other corners untouched", s.quad.topRight, moved.quad.topRight)
         assertEquals(s.quad.bottomRight, moved.quad.bottomRight)
@@ -82,7 +99,7 @@ class MainScanCropEditorTest {
     fun aDragThatWouldInvertThePolygonIsRefused() {
         val s = state()
         // Pull the top-left corner far past the bottom-right one — a classic bow-tie.
-        val refused = MainScanCropEditor.moveHandle(s, MainScanCropHandle.TOP_LEFT, 0.99f, 0.99f)
+        val refused = moveHandle(s, MainScanCropHandle.TOP_LEFT, 0.99f, 0.99f)
         assertSame("the polygon must not fold over", s.quad, refused.quad)
         assertTrue(MainScanCropEditor.isApplicable(refused))
     }
@@ -97,7 +114,7 @@ class MainScanCropEditorTest {
             MainScanCropHandle.BOTTOM_LEFT to CropPoint(0.06f, 0.90f)
         )
         for ((handle, target) in targets) {
-            s = MainScanCropEditor.moveHandle(s, handle, target.x, target.y)
+            s = moveHandle(s, handle, target.x, target.y)
             assertTrue("still applicable after moving $handle", MainScanCropEditor.isApplicable(s))
         }
         assertEquals(CropPoint(0.10f, 0.12f), s.quad.topLeft)
@@ -109,7 +126,7 @@ class MainScanCropEditorTest {
     @Test
     fun cornersAreClampedIntoTheImage() {
         val s = state()
-        val moved = MainScanCropEditor.moveHandle(s, MainScanCropHandle.TOP_LEFT, -5f, -5f)
+        val moved = moveHandle(s, MainScanCropHandle.TOP_LEFT, -5f, -5f)
         assertTrue(moved.quad.topLeft.x >= 0f)
         assertTrue(moved.quad.topLeft.y >= 0f)
     }
@@ -120,7 +137,7 @@ class MainScanCropEditorTest {
     fun draggingAnEdgeMovesBothOfItsCornersAndLeavesTheOppositeEdgeAlone() {
         val s = state()
         val topBefore = s.quad.topLeft.y
-        val moved = MainScanCropEditor.moveHandle(s, MainScanCropHandle.TOP, 0.5f, 0.30f)
+        val moved = moveHandle(s, MainScanCropHandle.TOP, 0.5f, 0.30f)
 
         assertTrue("top edge moved down", moved.quad.topLeft.y > topBefore)
         assertEquals(
@@ -136,23 +153,20 @@ class MainScanCropEditorTest {
     @Test
     fun anEdgeCannotBeDraggedThroughItsOpposite() {
         val s = state()
-        val refused = MainScanCropEditor.moveHandle(s, MainScanCropHandle.TOP, 0.5f, 0.99f)
+        val refused = moveHandle(s, MainScanCropHandle.TOP, 0.5f, 0.99f)
         assertSame(s.quad, refused.quad)
     }
 
     @Test
     fun fastEdgeOvershootIsClampedByOneSharedTranslation() {
         val s = state(slantedQuad())
-        val moved = MainScanCropEditor.moveHandle(s, MainScanCropHandle.TOP, -100f, -100f)
+        val moved = moveHandle(s, MainScanCropHandle.TOP, -100f, -100f)
         val beforeA = s.quad.topLeft
         val beforeB = s.quad.topRight
         val afterA = moved.quad.topLeft
         val afterB = moved.quad.topRight
 
         assertTrue("the bounded edge movement must be accepted", moved.quad != s.quad)
-        assertEquals(-0.25f, afterA.x - beforeA.x, 1e-6f)
-        assertEquals(-0.20f, afterA.y - beforeA.y, 1e-6f)
-        assertEquals(0f, afterA.x, 1e-6f)
         assertEquals(0f, afterA.y, 1e-6f)
         assertPointInUnit(afterA)
         assertPointInUnit(afterB)
@@ -168,19 +182,18 @@ class MainScanCropEditorTest {
     @Test
     fun everyEdgeOvershootKeepsBothEndpointsInsideTheImage() {
         val requests = mapOf(
-            MainScanCropHandle.TOP to Triple(CropPoint(-100f, -100f), -0.25f, -0.20f),
-            MainScanCropHandle.RIGHT to Triple(CropPoint(100f, -100f), 0.15f, -0.35f),
-            MainScanCropHandle.BOTTOM to Triple(CropPoint(100f, 100f), 0.15f, 0.15f),
-            MainScanCropHandle.LEFT to Triple(CropPoint(-100f, 100f), -0.15f, 0.20f)
+            MainScanCropHandle.TOP to CropPoint(-100f, -100f),
+            MainScanCropHandle.RIGHT to CropPoint(100f, -100f),
+            MainScanCropHandle.BOTTOM to CropPoint(100f, 100f),
+            MainScanCropHandle.LEFT to CropPoint(-100f, 100f)
         )
 
-        for ((handle, overshoot) in requests) {
-            val (request, expectedDx, expectedDy) = overshoot
+        for ((handle, request) in requests) {
             val original = state(slantedQuad())
             val (start, end) = MainScanCropEditor.edgeCorners(handle)
             val beforeStart = MainScanCropEditor.handlePosition(original.quad, start)
             val beforeEnd = MainScanCropEditor.handlePosition(original.quad, end)
-            val moved = MainScanCropEditor.moveHandle(
+            val moved = moveHandle(
                 original,
                 handle,
                 request.x,
@@ -188,37 +201,35 @@ class MainScanCropEditorTest {
             )
             val afterStart = MainScanCropEditor.handlePosition(moved.quad, start)
             val afterEnd = MainScanCropEditor.handlePosition(moved.quad, end)
+            val dx = afterStart.x - beforeStart.x
+            val dy = afterStart.y - beforeStart.y
 
             assertTrue("$handle overshoot must move the edge", moved.quad != original.quad)
-            assertEquals("$handle start dx", expectedDx, afterStart.x - beforeStart.x, 1e-6f)
-            assertEquals("$handle start dy", expectedDy, afterStart.y - beforeStart.y, 1e-6f)
-            assertEquals("$handle shared dx", expectedDx, afterEnd.x - beforeEnd.x, 1e-6f)
-            assertEquals("$handle shared dy", expectedDy, afterEnd.y - beforeEnd.y, 1e-6f)
+            assertEquals("$handle shared dx", dx, afterEnd.x - beforeEnd.x, 1e-6f)
+            assertEquals("$handle shared dy", dy, afterEnd.y - beforeEnd.y, 1e-6f)
+            assertEquals(beforeEnd.x - beforeStart.x, afterEnd.x - afterStart.x, 1e-6f)
+            assertEquals(beforeEnd.y - beforeStart.y, afterEnd.y - afterStart.y, 1e-6f)
             assertPointInUnit(afterStart)
             assertPointInUnit(afterEnd)
+            assertTrue(
+                "$handle must stop with an endpoint on the image boundary",
+                isOnBoundary(afterStart) || isOnBoundary(afterEnd)
+            )
 
             when (handle) {
                 MainScanCropHandle.TOP -> {
-                    assertEquals(0f, afterStart.x, 1e-6f)
-                    assertEquals(0f, afterStart.y, 1e-6f)
                     assertEquals(original.quad.bottomRight, moved.quad.bottomRight)
                     assertEquals(original.quad.bottomLeft, moved.quad.bottomLeft)
                 }
                 MainScanCropHandle.RIGHT -> {
-                    assertEquals(0f, afterStart.y, 1e-6f)
-                    assertEquals(1f, afterEnd.x, 1e-6f)
                     assertEquals(original.quad.bottomLeft, moved.quad.bottomLeft)
                     assertEquals(original.quad.topLeft, moved.quad.topLeft)
                 }
                 MainScanCropHandle.BOTTOM -> {
-                    assertEquals(1f, afterStart.x, 1e-6f)
-                    assertEquals(1f, afterStart.y, 1e-6f)
                     assertEquals(original.quad.topLeft, moved.quad.topLeft)
                     assertEquals(original.quad.topRight, moved.quad.topRight)
                 }
                 MainScanCropHandle.LEFT -> {
-                    assertEquals(0f, afterStart.x, 1e-6f)
-                    assertEquals(1f, afterStart.y, 1e-6f)
                     assertEquals(original.quad.topRight, moved.quad.topRight)
                     assertEquals(original.quad.bottomRight, moved.quad.bottomRight)
                 }
@@ -230,7 +241,7 @@ class MainScanCropEditorTest {
     @Test
     fun repeatedEdgeOvershootDoesNotAccumulatePastTheBoundary() {
         val original = state(slantedQuad())
-        var moved = MainScanCropEditor.moveHandle(
+        var moved = moveHandle(
             original,
             MainScanCropHandle.TOP,
             -100f,
@@ -239,10 +250,9 @@ class MainScanCropEditorTest {
         val firstBoundedQuad = moved.quad
 
         assertTrue("the first overshoot must move the edge", firstBoundedQuad != original.quad)
-        assertEquals(0f, firstBoundedQuad.topLeft.x, 1e-6f)
         assertEquals(0f, firstBoundedQuad.topLeft.y, 1e-6f)
         repeat(20) {
-            moved = MainScanCropEditor.moveHandle(
+            moved = moveHandle(
                 moved,
                 MainScanCropHandle.TOP,
                 -100f,
@@ -257,7 +267,7 @@ class MainScanCropEditorTest {
     @Test
     fun anEdgeCanMoveInwardAfterReachingTheBoundary() {
         val original = state(slantedQuad())
-        val bounded = MainScanCropEditor.moveHandle(
+        val bounded = moveHandle(
             original,
             MainScanCropHandle.TOP,
             -100f,
@@ -265,10 +275,9 @@ class MainScanCropEditorTest {
         )
 
         assertTrue("the outward move must be accepted", bounded.quad != original.quad)
-        assertEquals(0f, bounded.quad.topLeft.x, 1e-6f)
         assertEquals(0f, bounded.quad.topLeft.y, 1e-6f)
         val midpoint = MainScanCropEditor.handlePosition(bounded.quad, MainScanCropHandle.TOP)
-        val moved = MainScanCropEditor.moveHandle(
+        val moved = moveHandle(
             bounded,
             MainScanCropHandle.TOP,
             midpoint.x + 0.10f,
@@ -277,7 +286,7 @@ class MainScanCropEditorTest {
         val dxA = moved.quad.topLeft.x - bounded.quad.topLeft.x
         val dyA = moved.quad.topLeft.y - bounded.quad.topLeft.y
 
-        assertTrue(dxA > 0f)
+        assertTrue(dxA < 0f)
         assertTrue(dyA > 0f)
         assertEquals(dxA, moved.quad.topRight.x - bounded.quad.topRight.x, 1e-6f)
         assertEquals(dyA, moved.quad.topRight.y - bounded.quad.topRight.y, 1e-6f)
@@ -288,9 +297,110 @@ class MainScanCropEditorTest {
     @Test
     fun invalidGeometryStillPreservesThePreviousQuad() {
         val s = state()
-        val refused = MainScanCropEditor.moveHandle(s, MainScanCropHandle.TOP, 0.5f, 0.99f)
+        val refused = moveHandle(s, MainScanCropHandle.TOP, 0.5f, 0.99f)
 
         assertEquals(s.quad, refused.quad)
+    }
+
+    @Test
+    fun purePerpendicularDragMovesTheEdgeAlongItsPixelSpaceNormal() {
+        val original = state()
+        val moved = moveHandle(original, MainScanCropHandle.TOP, 0.5f, 0.30f)
+
+        assertEquals(0f, moved.quad.topLeft.x - original.quad.topLeft.x, 1e-6f)
+        assertEquals(0.15f, moved.quad.topLeft.y - original.quad.topLeft.y, 1e-6f)
+        assertEquals(0f, moved.quad.topRight.x - original.quad.topRight.x, 1e-6f)
+        assertEquals(0.15f, moved.quad.topRight.y - original.quad.topRight.y, 1e-6f)
+    }
+
+    @Test
+    fun pureTangentialDragProducesNoQuadMovement() {
+        val original = state()
+        val moved = moveHandle(original, MainScanCropHandle.TOP, 0.75f, 0.15f)
+
+        assertEquals(original.quad, moved.quad)
+    }
+
+    @Test
+    fun diagonalDragRetainsOnlyItsNormalComponent() {
+        val original = state()
+        val perpendicular = moveHandle(original, MainScanCropHandle.TOP, 0.5f, 0.30f)
+        val diagonal = moveHandle(original, MainScanCropHandle.TOP, 0.75f, 0.30f)
+
+        assertEquals(perpendicular.quad, diagonal.quad)
+    }
+
+    @Test
+    fun slantedTopEdgeObeysNormalOnlyMovement() {
+        assertSlantedEdgeNormalOnly(MainScanCropHandle.TOP)
+    }
+
+    @Test
+    fun slantedRightEdgeObeysNormalOnlyMovement() {
+        assertSlantedEdgeNormalOnly(MainScanCropHandle.RIGHT)
+    }
+
+    @Test
+    fun slantedBottomEdgeObeysNormalOnlyMovement() {
+        assertSlantedEdgeNormalOnly(MainScanCropHandle.BOTTOM)
+    }
+
+    @Test
+    fun slantedLeftEdgeObeysNormalOnlyMovement() {
+        assertSlantedEdgeNormalOnly(MainScanCropHandle.LEFT)
+    }
+
+    @Test
+    fun nonSquareImageUsesPixelMetricProjection() {
+        val original = state(
+            PerspectiveQuad(
+                topLeft = CropPoint(0.2f, 0.2f),
+                topRight = CropPoint(0.8f, 0.4f),
+                bottomRight = CropPoint(0.85f, 0.85f),
+                bottomLeft = CropPoint(0.15f, 0.8f)
+            )
+        )
+        val moved = moveHandle(
+            state = original,
+            handle = MainScanCropHandle.TOP,
+            x = 0.6f,
+            y = 0.4f,
+            imageWidth = 200,
+            imageHeight = 100
+        )
+        val dx = moved.quad.topLeft.x - original.quad.topLeft.x
+        val dy = moved.quad.topLeft.y - original.quad.topLeft.y
+
+        assertEquals(-0.005405405f, dx, 1e-6f)
+        assertEquals(0.06486486f, dy, 1e-6f)
+        assertEquals(dx, moved.quad.topRight.x - original.quad.topRight.x, 1e-6f)
+        assertEquals(dy, moved.quad.topRight.y - original.quad.topRight.y, 1e-6f)
+        assertTrue("naive normalized projection would produce dx=-0.02", kotlin.math.abs(dx + 0.02f) > 0.01f)
+    }
+
+    @Test
+    fun edgeProjectionFailsClosedForInvalidInputs() {
+        val original = state()
+
+        assertSame(
+            original,
+            moveHandle(original, MainScanCropHandle.TOP, Float.NaN, 0.2f)
+        )
+        assertSame(
+            original,
+            moveHandle(original, MainScanCropHandle.TOP, 0.5f, 0.2f, imageWidth = 0)
+        )
+        assertSame(
+            original,
+            moveHandle(original, MainScanCropHandle.TOP, 0.5f, 0.2f, imageHeight = -1)
+        )
+
+        val degenerateQuad = original.quad.copy(topRight = original.quad.topLeft)
+        val degenerate = original.copy(quad = degenerateQuad)
+        assertSame(
+            degenerate,
+            moveHandle(degenerate, MainScanCropHandle.TOP, 0.5f, 0.2f)
+        )
     }
 
     @Test
@@ -401,7 +511,7 @@ class MainScanCropEditorTest {
     @Test
     fun rotationDoesNotResetTheUsersCrop() {
         // Rotation must not be destructive — only All resets.
-        val s = MainScanCropEditor.moveHandle(state(), MainScanCropHandle.TOP_LEFT, 0.25f, 0.30f)
+        val s = moveHandle(state(), MainScanCropHandle.TOP_LEFT, 0.25f, 0.30f)
         val rotated = MainScanCropEditor.rotate(s, MainScanRotation.RIGHT)
         assertFalse(
             "the crop must survive a rotation",
@@ -419,7 +529,7 @@ class MainScanCropEditorTest {
 
     @Test
     fun allResetsToTheCompleteImageBounds() {
-        val s = MainScanCropEditor.moveHandle(state(), MainScanCropHandle.TOP_LEFT, 0.3f, 0.3f)
+        val s = moveHandle(state(), MainScanCropHandle.TOP_LEFT, 0.3f, 0.3f)
         val reset = MainScanCropEditor.resetToFullFrame(s)
         assertEquals(MainScanCropEditor.fullFrame(), reset.quad)
         assertEquals(MainScanPolygonSource.FULL_FRAME, reset.source)
@@ -475,6 +585,69 @@ class MainScanCropEditorTest {
         }
         assertEquals(8, MainScanCropHandle.entries.size)
     }
+
+    private fun assertSlantedEdgeNormalOnly(handle: MainScanCropHandle) {
+        val original = state(slantedQuad())
+        val (startHandle, endHandle) = MainScanCropEditor.edgeCorners(handle)
+        val start = MainScanCropEditor.handlePosition(original.quad, startHandle)
+        val end = MainScanCropEditor.handlePosition(original.quad, endHandle)
+        val midpoint = MainScanCropEditor.handlePosition(original.quad, handle)
+        val edgePixelX = (end.x - start.x) * 1_000f
+        val edgePixelY = (end.y - start.y) * 1_000f
+        val edgeLength = hypot(edgePixelX, edgePixelY)
+        val expectedDx = 40f * (-edgePixelY / edgeLength) / 1_000f
+        val expectedDy = 40f * (edgePixelX / edgeLength) / 1_000f
+        val moved = moveHandle(
+            original,
+            handle,
+            midpoint.x + expectedDx,
+            midpoint.y + expectedDy
+        )
+        val movedStart = MainScanCropEditor.handlePosition(moved.quad, startHandle)
+        val movedEnd = MainScanCropEditor.handlePosition(moved.quad, endHandle)
+        val actualDx = movedStart.x - start.x
+        val actualDy = movedStart.y - start.y
+
+        assertEquals("$handle pixel-normal dx", expectedDx, actualDx, 1e-6f)
+        assertEquals("$handle pixel-normal dy", expectedDy, actualDy, 1e-6f)
+        assertEquals("$handle shared dx", actualDx, movedEnd.x - end.x, 1e-6f)
+        assertEquals("$handle shared dy", actualDy, movedEnd.y - end.y, 1e-6f)
+        assertEquals("$handle preserved edge x", end.x - start.x, movedEnd.x - movedStart.x, 1e-6f)
+        assertEquals("$handle preserved edge y", end.y - start.y, movedEnd.y - movedStart.y, 1e-6f)
+        assertOppositeCornersUnchanged(handle, original.quad, moved.quad)
+    }
+
+    private fun assertOppositeCornersUnchanged(
+        handle: MainScanCropHandle,
+        before: PerspectiveQuad,
+        after: PerspectiveQuad
+    ) {
+        when (handle) {
+            MainScanCropHandle.TOP -> {
+                assertEquals(before.bottomRight, after.bottomRight)
+                assertEquals(before.bottomLeft, after.bottomLeft)
+            }
+            MainScanCropHandle.RIGHT -> {
+                assertEquals(before.bottomLeft, after.bottomLeft)
+                assertEquals(before.topLeft, after.topLeft)
+            }
+            MainScanCropHandle.BOTTOM -> {
+                assertEquals(before.topLeft, after.topLeft)
+                assertEquals(before.topRight, after.topRight)
+            }
+            MainScanCropHandle.LEFT -> {
+                assertEquals(before.topRight, after.topRight)
+                assertEquals(before.bottomRight, after.bottomRight)
+            }
+            else -> error("expected an edge handle")
+        }
+    }
+
+    private fun isOnBoundary(point: CropPoint): Boolean =
+        kotlin.math.abs(point.x) < 1e-6f ||
+            kotlin.math.abs(point.x - 1f) < 1e-6f ||
+            kotlin.math.abs(point.y) < 1e-6f ||
+            kotlin.math.abs(point.y - 1f) < 1e-6f
 
     private fun slantedQuad() = PerspectiveQuad(
         topLeft = CropPoint(0.25f, 0.20f),

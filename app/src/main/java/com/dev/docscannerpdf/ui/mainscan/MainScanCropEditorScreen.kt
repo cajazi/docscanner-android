@@ -261,7 +261,9 @@ private fun CropSurface(
                                 state = working,
                                 handle = handle,
                                 x = normalized.x,
-                                y = normalized.y
+                                y = normalized.y,
+                                imageWidth = image.width,
+                                imageHeight = image.height
                             )
                             currentOnCropStateChange(working)
                         },
