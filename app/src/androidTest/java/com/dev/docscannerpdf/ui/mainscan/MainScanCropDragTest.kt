@@ -279,6 +279,49 @@ class MainScanCropDragTest {
         assertNull("the drag must be finished once the finger lifts", readState().activeHandle)
     }
 
+    @Test
+    fun downOnHandleThenCrossSlopOutsideTargetPreservesOriginalHandleIntent() {
+        val image = workingImage()
+        val readState = mountEditor(image)
+        val before = readState().quad
+        val fitted = fittedRect(image)
+
+        composeRule.onNodeWithContentDescription("Captured page").performTouchInput {
+            down(fitted.at(0f, 0f))
+            moveTo(fitted.at(0.20f, 0.18f))
+            moveTo(fitted.at(0.32f, 0.24f))
+            up()
+        }
+        composeRule.waitForIdle()
+
+        val after = readState().quad
+        assertClose("the original top-left handle must remain acquired", 0.32f, after.topLeft.x)
+        assertClose("the first recognized drag must not be lost", 0.24f, after.topLeft.y)
+        assertEquals(before.topRight, after.topRight)
+        assertEquals(before.bottomRight, after.bottomRight)
+        assertEquals(before.bottomLeft, after.bottomLeft)
+        assertNull(readState().activeHandle)
+    }
+
+    @Test
+    fun downOffHandleThenCrossSlopOverHandleDoesNotAcquireLate() {
+        val image = workingImage()
+        val readState = mountEditor(image)
+        val before = readState()
+        val fitted = fittedRect(image)
+
+        composeRule.onNodeWithContentDescription("Captured page").performTouchInput {
+            down(fitted.at(0.5f, 0.5f))
+            moveTo(fitted.at(0f, 0f))
+            moveTo(fitted.at(0.20f, 0.18f))
+            up()
+        }
+        composeRule.waitForIdle()
+
+        assertEquals("an off-handle down must keep the crop unchanged", before.quad, readState().quad)
+        assertNull("an off-handle down must never acquire a handle later", readState().activeHandle)
+    }
+
     // --- edge handles -----------------------------------------------------------------------------
 
     @Test
