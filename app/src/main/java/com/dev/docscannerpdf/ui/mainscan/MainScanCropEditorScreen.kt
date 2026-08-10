@@ -2,7 +2,10 @@ package com.dev.docscannerpdf.ui.mainscan
 
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
-import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.awaitTouchSlopOrCancellation
+import androidx.compose.foundation.gestures.drag
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -49,6 +52,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.platform.LocalDensity
 import com.dev.docscannerpdf.domain.crop.CropPoint
 import com.dev.docscannerpdf.domain.mainscan.MainScanCropEditor
 import com.dev.docscannerpdf.domain.mainscan.MainScanCropHandle
@@ -57,11 +61,16 @@ import com.dev.docscannerpdf.domain.mainscan.MainScanMagnifier
 import com.dev.docscannerpdf.domain.mainscan.MainScanRotation
 import com.dev.docscannerpdf.ui.idcard.DarkSystemBarsEffect
 import kotlin.math.roundToInt
+import kotlin.math.max
+import kotlin.coroutines.cancellation.CancellationException
 
 private val CropChrome = Color(0xFF101114)
 
 /** Touch radius for grabbing a handle, as a fraction of the shorter rendered edge. */
 private const val HANDLE_TOUCH_RADIUS_FRACTION = 0.075f
+
+/** Owner-approved minimum invisible touch radius; visible handle drawing remains unchanged. */
+private val MIN_HANDLE_TOUCH_RADIUS = 24.dp
 
 /**
  * The Main Scanner crop editor: the retained capture with an editable document quadrilateral.
@@ -162,6 +171,7 @@ private fun CropSurface(
 ) {
     var containerSize by remember { mutableStateOf(IntSize.Zero) }
     val imageBitmap = remember(image.bitmap) { image.bitmap.asImageBitmap() }
+    val density = LocalDensity.current
 
     // The gesture block below is keyed on the rendered geometry only, so Compose keeps the ORIGINAL
     // suspending lambda across every recomposition that merely changes the polygon. Reading
@@ -208,12 +218,10 @@ private fun CropSurface(
             modifier = Modifier.fillMaxSize()
         )
 
-        val touchRadiusPx = minOf(rendered.width, rendered.height) * HANDLE_TOUCH_RADIUS_FRACTION
-        val touchRadiusNormalized = if (rendered.width <= 0f) {
-            0f
-        } else {
-            touchRadiusPx / minOf(rendered.width, rendered.height)
-        }
+        val touchRadiusPx = max(
+            minOf(rendered.width, rendered.height) * HANDLE_TOUCH_RADIUS_FRACTION,
+            with(density) { MIN_HANDLE_TOUCH_RADIUS.toPx() }
+        )
 
         Canvas(
             modifier = Modifier
@@ -230,8 +238,23 @@ private fun CropSurface(
                     var activeHandle: MainScanCropHandle? = null
                     var working: MainScanCropState = currentCropState
 
-                    detectDragGestures(
-                        onDragStart = { position ->
+                    fun finishGesture() {
+                        if (activeHandle != null) {
+                            working = MainScanCropEditor.endDrag(working)
+                            currentOnCropStateChange(working)
+                        }
+                        activeHandle = null
+                    }
+
+                    awaitEachGesture {
+                        try {
+                            val down = awaitFirstDown(requireUnconsumed = false)
+                            val originalDownPosition = down.position
+                            val slopChange = awaitTouchSlopOrCancellation(down.id) { change, _ ->
+                                change.consume()
+                            }
+                            if (slopChange == null) return@awaitEachGesture
+
                             // Re-seed from the latest hoisted state and clear any residue from a
                             // previous gesture BEFORE hit testing. This coroutine survives unrelated
                             // crop-state changes (e.g. Reset All), so a stale `working`/`activeHandle`
@@ -240,51 +263,49 @@ private fun CropSurface(
                             val base = currentCropState
                             activeHandle = null
                             working = base
-                            val normalized = toNormalized(position)
+                            val normalized = toNormalized(originalDownPosition)
                             val handle = MainScanCropEditor.handleAt(
                                 quad = base.quad,
-                                x = normalized.x,
-                                y = normalized.y,
-                                radius = touchRadiusNormalized
+                                xNormalized = normalized.x,
+                                yNormalized = normalized.y,
+                                renderedWidthPx = rendered.width,
+                                renderedHeightPx = rendered.height,
+                                radiusPx = touchRadiusPx
                             )
                             if (handle != null) {
                                 activeHandle = handle
                                 working = MainScanCropEditor.beginDrag(base, handle)
                                 currentOnCropStateChange(working)
                             }
-                        },
-                        onDrag = { change, _ ->
-                            val handle = activeHandle ?: return@detectDragGestures
-                            change.consume()
-                            val normalized = toNormalized(change.position)
-                            working = MainScanCropEditor.moveHandle(
-                                state = working,
-                                handle = handle,
-                                x = normalized.x,
-                                y = normalized.y,
-                                imageWidth = image.width,
-                                imageHeight = image.height
-                            )
-                            currentOnCropStateChange(working)
-                        },
-                        onDragEnd = {
+                            fun applyDrag(
+                                change: androidx.compose.ui.input.pointer.PointerInputChange
+                            ) {
+                                val acquiredHandle = activeHandle ?: return
+                                if (!change.isConsumed) change.consume()
+                                val dragPosition = toNormalized(change.position)
+                                working = MainScanCropEditor.moveHandle(
+                                    state = working,
+                                    handle = acquiredHandle,
+                                    x = dragPosition.x,
+                                    y = dragPosition.y,
+                                    imageWidth = image.width,
+                                    imageHeight = image.height
+                                )
+                                currentOnCropStateChange(working)
+                            }
+
+                            // Apply the slop-crossing event exactly once, then continue with later moves.
+                            applyDrag(slopChange)
+                            drag(slopChange.id) { change -> applyDrag(change) }
                             // Publish only when THIS gesture actually acquired a handle. An off-handle
                             // drag must never republish a stale local polygon over a crop state that
                             // changed externally (e.g. Reset All) while the coroutine lived on.
-                            if (activeHandle != null) {
-                                working = MainScanCropEditor.endDrag(working)
-                                currentOnCropStateChange(working)
-                            }
-                            activeHandle = null
-                        },
-                        onDragCancel = {
-                            if (activeHandle != null) {
-                                working = MainScanCropEditor.endDrag(working)
-                                currentOnCropStateChange(working)
-                            }
-                            activeHandle = null
+                            finishGesture()
+                        } catch (cancellation: CancellationException) {
+                            finishGesture()
+                            throw cancellation
                         }
-                    )
+                    }
                 }
         ) {
             val corners = cropState.quad.corners().map { toViewport(it) }

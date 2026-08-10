@@ -424,31 +424,83 @@ class MainScanCropEditorTest {
     // --- hit testing -----------------------------------------------------------------------------
 
     @Test
-    fun handleHitTestingFindsTheNearestHandleWithinRadius() {
+    fun allEightHandlesAreSelectableAtTheirDisplayedPositions() {
         val s = state()
-        val tl = s.quad.topLeft
-        assertEquals(
-            MainScanCropHandle.TOP_LEFT,
-            MainScanCropEditor.handleAt(s.quad, tl.x + 0.01f, tl.y + 0.01f, radius = 0.08f)
-        )
+        for (handle in MainScanCropHandle.entries) {
+            val position = MainScanCropEditor.handlePosition(s.quad, handle)
+            assertEquals(
+                handle,
+                MainScanCropEditor.handleAt(s.quad, position.x, position.y, 800f, 1_200f, 1f)
+            )
+        }
+    }
+
+    @Test
+    fun aPointerOutsideThePixelRadiusSelectsNothing() {
+        val s = state()
         assertNull(
             "a touch far from every handle grabs nothing",
-            MainScanCropEditor.handleAt(s.quad, 0.5f, 0.5f, radius = 0.05f)
+            MainScanCropEditor.handleAt(s.quad, 0.5f, 0.5f, 800f, 1_200f, 100f)
         )
     }
 
     @Test
-    fun aCornerWinsOverAnEdgeAtEqualDistance() {
-        // On a short edge the midpoint handle and a corner can be equidistant; reaching into the
-        // corner almost always means the corner.
-        val s = state()
-        val corner = MainScanCropEditor.handleAt(
-            s.quad,
-            s.quad.topLeft.x,
-            s.quad.topLeft.y,
-            radius = 0.5f
+    fun nonSquareRenderedGeometryUsesDisplayPixelDistance() {
+        val selected = MainScanCropEditor.handleAt(
+            quad = state().quad,
+            xNormalized = 0.40f,
+            yNormalized = 0.45f,
+            renderedWidthPx = 1_000f,
+            renderedHeightPx = 100f,
+            radiusPx = 300f
         )
-        assertEquals(MainScanCropHandle.TOP_LEFT, corner)
+
+        assertEquals(
+            "normalized Euclidean distance favors LEFT here, but display pixels favor TOP",
+            MainScanCropHandle.TOP,
+            selected
+        )
+    }
+
+    @Test
+    fun measurablyNearestOverlappingHandleWinsEvenWhenItIsAnEdge() {
+        val tight = PerspectiveQuad(
+            topLeft = CropPoint(0.4f, 0.4f),
+            topRight = CropPoint(0.6f, 0.4f),
+            bottomRight = CropPoint(0.6f, 0.6f),
+            bottomLeft = CropPoint(0.4f, 0.6f)
+        )
+
+        assertEquals(
+            MainScanCropHandle.TOP,
+            MainScanCropEditor.handleAt(tight, 0.49f, 0.4f, 1_000f, 1_000f, 100f)
+        )
+    }
+
+    @Test
+    fun aCornerWinsAGenuineEqualDistanceTieWithAnEdge() {
+        val tight = PerspectiveQuad(
+            topLeft = CropPoint(0.4f, 0.4f),
+            topRight = CropPoint(0.6f, 0.4f),
+            bottomRight = CropPoint(0.6f, 0.6f),
+            bottomLeft = CropPoint(0.4f, 0.6f)
+        )
+
+        assertEquals(
+            MainScanCropHandle.TOP_LEFT,
+            MainScanCropEditor.handleAt(tight, 0.45f, 0.4f, 1_000f, 1_000f, 60f)
+        )
+    }
+
+    @Test
+    fun sameClassTieUsesTheExplicitStableRank() {
+        val s = state()
+
+        assertEquals(
+            "all four edge handles are equally distant; TOP has the documented stable rank",
+            MainScanCropHandle.TOP,
+            MainScanCropEditor.handleAt(s.quad, 0.5f, 0.5f, 1_000f, 1_000f, 400f)
+        )
     }
 
     // --- drag lifecycle --------------------------------------------------------------------------

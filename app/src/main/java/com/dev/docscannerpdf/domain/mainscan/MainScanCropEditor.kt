@@ -243,31 +243,39 @@ object MainScanCropEditor {
             CropPoint((a.x + b.x) / 2f, (a.y + b.y) / 2f)
         }
 
-    /**
-     * The handle nearest ([x], [y]) within [radius], or null. Corners win ties against edges: at a
-     * short edge the two are close together, and the user reaching into a corner almost always means
-     * the corner.
-     */
+    /** The nearest handle in rendered display pixels within [radiusPx], or null. */
     fun handleAt(
         quad: PerspectiveQuad,
-        x: Float,
-        y: Float,
-        radius: Float
+        xNormalized: Float,
+        yNormalized: Float,
+        renderedWidthPx: Float,
+        renderedHeightPx: Float,
+        radiusPx: Float
     ): MainScanCropHandle? {
-        var best: MainScanCropHandle? = null
-        var bestDistance = Float.MAX_VALUE
+        if (!xNormalized.isFinite() || !yNormalized.isFinite() ||
+            !renderedWidthPx.isFinite() || renderedWidthPx <= 0f ||
+            !renderedHeightPx.isFinite() || renderedHeightPx <= 0f ||
+            !radiusPx.isFinite() || radiusPx < 0f
+        ) {
+            return null
+        }
+        val candidates = mutableListOf<Pair<MainScanCropHandle, Float>>()
         for (handle in MainScanCropHandle.entries) {
             val position = handlePosition(quad, handle)
-            val distance = hypot(position.x - x, position.y - y)
-            if (distance > radius) continue
-            val better = distance < bestDistance ||
-                (abs(distance - bestDistance) < 1e-4f && handle.isCorner)
-            if (better) {
-                best = handle
-                bestDistance = distance
-            }
+            val dxPx = (position.x - xNormalized) * renderedWidthPx
+            val dyPx = (position.y - yNormalized) * renderedHeightPx
+            val distance = hypot(dxPx, dyPx)
+            if (!distance.isFinite() || distance > radiusPx) continue
+            candidates += handle to distance
         }
-        return best
+        val nearestDistance = candidates.minOfOrNull { it.second } ?: return null
+        return candidates
+            .asSequence()
+            .filter { (_, distance) ->
+                distance - nearestDistance <= HANDLE_DISTANCE_TIE_EPSILON_PX
+            }
+            .minBy { (handle, _) -> tieRank(handle) }
+            .first
     }
 
     /**
@@ -315,6 +323,21 @@ object MainScanCropEditor {
 
     /** Pixel-space edge lengths at or below this value have no stable normal. */
     private const val DEGENERATE_PIXEL_EDGE_LENGTH = 1e-6f
+
+    /** Distances this close are treated as equal before applying the explicit stable handle rank. */
+    private const val HANDLE_DISTANCE_TIE_EPSILON_PX = 1e-3f
+
+    /** Corners outrank edges on distance ties; each class then follows this documented stable order. */
+    private fun tieRank(handle: MainScanCropHandle): Int = when (handle) {
+        MainScanCropHandle.TOP_LEFT -> 0
+        MainScanCropHandle.TOP_RIGHT -> 1
+        MainScanCropHandle.BOTTOM_RIGHT -> 2
+        MainScanCropHandle.BOTTOM_LEFT -> 3
+        MainScanCropHandle.TOP -> 4
+        MainScanCropHandle.RIGHT -> 5
+        MainScanCropHandle.BOTTOM -> 6
+        MainScanCropHandle.LEFT -> 7
+    }
 
     private fun midpointDistance(
         a1: CropPoint,
