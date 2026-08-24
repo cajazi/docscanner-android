@@ -25,6 +25,17 @@ data class MagnifierSource(
 }
 
 /**
+ * The size the WHOLE rendered image is drawn at inside the loupe, in viewport pixels.
+ *
+ * Expressed against the rendered image rather than the source bitmap, because magnification is only
+ * meaningful relative to what the user can actually see on screen.
+ */
+data class MagnifiedImageSize(
+    val width: Float,
+    val height: Float
+)
+
+/**
  * Pure geometry for the precision magnifier shown while a crop handle is dragged.
  *
  * The loupe exists because a fingertip covers roughly 8–10 mm of screen — far more than the corner
@@ -120,6 +131,34 @@ object MainScanMagnifier {
             centerX = point.x,
             centerY = point.y,
             halfExtent = maxOf(halfExtentX, halfExtentY)
+        )
+    }
+
+    /**
+     * The size the whole image is drawn at inside the loupe, given the size it is currently RENDERED
+     * at behind the crop overlay ([renderedWidth] x [renderedHeight] under `ContentScale.Fit`).
+     *
+     * Deriving this from the rendered size is the whole point. Scaling from the SOURCE bitmap's pixel
+     * dimensions instead makes the magnified drawing a fixed on-screen size, so the ratio the user
+     * perceives drifts with the image's aspect and the viewport — on a portrait page in a portrait
+     * viewport it lands near 0.88x, and the "magnifier" shows the page SMALLER than the page it is
+     * drawn on top of. Against the rendered size the ratio is exactly [MAGNIFICATION], always.
+     *
+     * The rendered size already carries the image's aspect from `Fit`, so scaling both axes by the
+     * same factor preserves it; no separate aspect handling is needed.
+     *
+     * Degenerate input fails closed at 0 x 0 rather than throwing or producing a NaN transform, so a
+     * renderer can simply skip drawing.
+     */
+    fun magnifiedImageSize(renderedWidth: Float, renderedHeight: Float): MagnifiedImageSize {
+        if (!renderedWidth.isFinite() || !renderedHeight.isFinite() ||
+            renderedWidth <= 0f || renderedHeight <= 0f
+        ) {
+            return MagnifiedImageSize(0f, 0f)
+        }
+        return MagnifiedImageSize(
+            width = renderedWidth * MAGNIFICATION,
+            height = renderedHeight * MAGNIFICATION
         )
     }
 

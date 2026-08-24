@@ -170,4 +170,121 @@ class MainScanMagnifierTest {
         )
         assertEquals(0f, window.halfExtent, 1e-5f)
     }
+
+    // --- display-relative magnified size -----------------------------------------------------------
+
+    /**
+     * The regression these cover: the renderer used to derive its scale from the SOURCE bitmap's
+     * pixel dimensions —
+     *
+     *     ((loupeRadius * 2) / min(sourceWidth, sourceHeight)) * MAGNIFICATION
+     *
+     * — which pins the magnified drawing to a fixed on-screen size. The ratio the user actually
+     * perceives is measured against the RENDERED image, so that formula drifted with aspect and
+     * viewport and landed near 0.884x on a portrait page in a portrait viewport: the loupe showed the
+     * page smaller than the page it was drawn on. Scaling the rendered size makes it exactly
+     * [MainScanMagnifier.MAGNIFICATION], always.
+     */
+    @Test
+    fun theMagnifiedSizeIsExactlyMagnificationTimesTheRenderedSize() {
+        val magnified = MainScanMagnifier.magnifiedImageSize(
+            renderedWidth = 900f,
+            renderedHeight = 1200f
+        )
+        assertEquals(900f * MainScanMagnifier.MAGNIFICATION, magnified.width, 1e-3f)
+        assertEquals(1200f * MainScanMagnifier.MAGNIFICATION, magnified.height, 1e-3f)
+    }
+
+    @Test
+    fun aPortraitRenderedImageMagnifiesToTheDocumentedSize() {
+        // 1080 x 1440 rendered, MAGNIFICATION = 2.6 -> 2808 x 3744.
+        val magnified = MainScanMagnifier.magnifiedImageSize(1080f, 1440f)
+        assertEquals(2808f, magnified.width, 1e-3f)
+        assertEquals(3744f, magnified.height, 1e-3f)
+    }
+
+    @Test
+    fun aLandscapeRenderedImageMagnifiesToTheDocumentedSize() {
+        // 1080 x 810 rendered, MAGNIFICATION = 2.6 -> 2808 x 2106.
+        val magnified = MainScanMagnifier.magnifiedImageSize(1080f, 810f)
+        assertEquals(2808f, magnified.width, 1e-3f)
+        assertEquals(2106f, magnified.height, 1e-3f)
+    }
+
+    /**
+     * The same rendered rectangle can come from wildly different working bitmaps — a 4000px still and
+     * a 600px test fixture both letterbox to the same rectangle under `Fit`. The zoom the user sees
+     * must be identical in both cases, which is exactly what the old source-derived formula got
+     * wrong.
+     */
+    @Test
+    fun theEffectiveZoomIsMagnificationWhateverTheSourceBitmapMeasured() {
+        // Rendered size for a given source under ContentScale.Fit in a 1080x1920 viewport.
+        fun renderedFor(sourceWidth: Float, sourceHeight: Float): Pair<Float, Float> {
+            val scale = minOf(1080f / sourceWidth, 1920f / sourceHeight)
+            return sourceWidth * scale to sourceHeight * scale
+        }
+
+        val sources = listOf(
+            3000f to 4000f,   // full-resolution portrait still
+            1536f to 2048f,   // downsampled working bitmap, same aspect
+            600f to 800f,     // instrumentation fixture, same aspect
+            4000f to 3000f,   // landscape still
+            2000f to 2000f    // square
+        )
+        for ((sourceWidth, sourceHeight) in sources) {
+            val (renderedWidth, renderedHeight) = renderedFor(sourceWidth, sourceHeight)
+            val magnified = MainScanMagnifier.magnifiedImageSize(renderedWidth, renderedHeight)
+            assertEquals(
+                "horizontal zoom for a ${sourceWidth.toInt()}x${sourceHeight.toInt()} source",
+                MainScanMagnifier.MAGNIFICATION,
+                magnified.width / renderedWidth,
+                1e-4f
+            )
+            assertEquals(
+                "vertical zoom for a ${sourceWidth.toInt()}x${sourceHeight.toInt()} source",
+                MainScanMagnifier.MAGNIFICATION,
+                magnified.height / renderedHeight,
+                1e-4f
+            )
+        }
+    }
+
+    @Test
+    fun theRenderedAspectRatioIsPreserved() {
+        for ((renderedWidth, renderedHeight) in listOf(
+            1080f to 1440f,
+            1080f to 810f,
+            1080f to 1080f
+        )) {
+            val magnified = MainScanMagnifier.magnifiedImageSize(renderedWidth, renderedHeight)
+            assertEquals(
+                "a stretched loupe would misplace every point but the centre",
+                renderedWidth / renderedHeight,
+                magnified.width / magnified.height,
+                1e-4f
+            )
+        }
+    }
+
+    @Test
+    fun degenerateRenderedDimensionsFailClosedRatherThanThrowing() {
+        // A zero, negative or non-finite rendered size means there is nothing to draw. Failing closed
+        // lets the renderer skip the loupe instead of producing a NaN transform.
+        for ((renderedWidth, renderedHeight) in listOf(
+            0f to 0f,
+            0f to 1440f,
+            1080f to 0f,
+            -1080f to 1440f,
+            1080f to -1440f,
+            Float.NaN to 1440f,
+            1080f to Float.NaN,
+            Float.POSITIVE_INFINITY to 1440f,
+            1080f to Float.POSITIVE_INFINITY
+        )) {
+            val magnified = MainScanMagnifier.magnifiedImageSize(renderedWidth, renderedHeight)
+            assertEquals("width for ($renderedWidth, $renderedHeight)", 0f, magnified.width, 1e-5f)
+            assertEquals("height for ($renderedWidth, $renderedHeight)", 0f, magnified.height, 1e-5f)
+        }
+    }
 }

@@ -371,8 +371,8 @@ private fun CropSurface(
                 )
                 drawMagnifier(
                     imageBitmap = imageBitmap,
-                    sourceWidth = image.width,
-                    sourceHeight = image.height,
+                    renderedWidth = rendered.width,
+                    renderedHeight = rendered.height,
                     point = point,
                     placementX = placement.centerX,
                     placementY = placement.centerY,
@@ -390,25 +390,26 @@ private fun CropSurface(
  * The magnified region is produced by drawing the whole bitmap scaled up and translated so the
  * dragged point lands at the loupe centre, clipped to the circle. Sampling the bitmap directly this
  * way is what keeps the loupe showing real captured detail rather than an upscaled preview.
+ *
+ * The scale comes from the RENDERED size of the image behind the overlay, not from the source
+ * bitmap's pixel dimensions, so the ratio the user sees is exactly [MainScanMagnifier.MAGNIFICATION]
+ * relative to the page they are dragging on. The letterbox offsets (`rendered.left`/`top`) are
+ * deliberately NOT applied here: the transform is anchored in normalized image space, and adding
+ * them would shift the crosshair off the point being placed.
  */
 private fun DrawScope.drawMagnifier(
     imageBitmap: androidx.compose.ui.graphics.ImageBitmap,
-    sourceWidth: Int,
-    sourceHeight: Int,
+    renderedWidth: Float,
+    renderedHeight: Float,
     point: CropPoint,
     placementX: Float,
     placementY: Float,
     radius: Float
 ) {
-    if (radius <= 0f || sourceWidth <= 0 || sourceHeight <= 0) return
+    if (radius <= 0f) return
 
-    val magnification = MainScanMagnifier.MAGNIFICATION
-    // Scale the source so one source pixel covers `magnification` screen pixels relative to how the
-    // image is currently rendered; using the loupe diameter keeps it independent of image size.
-    val baseScale = (radius * 2f) / minOf(sourceWidth, sourceHeight).toFloat()
-    val scale = baseScale * magnification
-    val scaledWidth = sourceWidth * scale
-    val scaledHeight = sourceHeight * scale
+    val magnified = MainScanMagnifier.magnifiedImageSize(renderedWidth, renderedHeight)
+    if (magnified.width <= 0f || magnified.height <= 0f) return
 
     val circle = Path().apply {
         addOval(
@@ -428,13 +429,13 @@ private fun DrawScope.drawMagnifier(
             size = Size(radius * 2f, radius * 2f)
         )
         // Offset so the dragged point sits exactly at the loupe centre.
-        val originX = placementX - point.x * scaledWidth
-        val originY = placementY - point.y * scaledHeight
+        val originX = placementX - point.x * magnified.width
+        val originY = placementY - point.y * magnified.height
         translate(left = originX, top = originY) {
             drawImage(
                 image = imageBitmap,
                 dstOffset = IntOffset.Zero,
-                dstSize = IntSize(scaledWidth.roundToInt(), scaledHeight.roundToInt())
+                dstSize = IntSize(magnified.width.roundToInt(), magnified.height.roundToInt())
             )
         }
         // Crosshair marking the precise control point.
