@@ -420,9 +420,9 @@ object MainScanEdgeQuadFinder {
         previous: PerspectiveQuad?,
         sink: MutableList<CandidateDiagnostic>? = null
     ): PerspectiveQuad? {
-        val pairs = oppositeEdgePairs(lines, width, height, config)
+        val considered = retainDiverseLines(lines)
+        val pairs = oppositeEdgePairs(considered, width, height, config)
         if (pairs.size < 2) return null
-        val considered = lines.take(MAX_LINES_CONSIDERED)
 
         var best: PerspectiveQuad? = null
         var bestScore = 0f
@@ -480,41 +480,117 @@ object MainScanEdgeQuadFinder {
         return 1f + CONTINUITY_WEIGHT * (1f - drift / CONTINUITY_RANGE)
     }
 
-    /** Near-parallel line pairs far enough apart to bound something. */
+    /**
+     * The orientation bucket a line belongs to, wrapping so that a normal just under 180 degrees
+     * shares a bucket with one just over 0 -- those describe the same undirected orientation.
+     */
+    private fun orientationBucket(line: DetectedLine): Int {
+        val degrees = line.theta * 180f / PI.toFloat()
+        val shifted = degrees + ORIENTATION_BUCKET_DEGREES / 2f
+        val index = (shifted / ORIENTATION_BUCKET_DEGREES).toInt() % ORIENTATION_BUCKETS
+        return if (index < 0) index + ORIENTATION_BUCKETS else index
+    }
+
+    /**
+     * The lines the enumeration is allowed to build from: at most [MAX_LINES_CONSIDERED], chosen so
+     * that no single orientation can take the whole allowance.
+     *
+     * ## Why a plain vote-ranked prefix is not enough
+     *
+     * A Hough peak's votes are essentially the number of edge pixels lying on that line, so they
+     * scale with how far the line runs across the frame. A background texture with a strong
+     * repeating direction -- floor seams, tiling, panelling, shelving -- therefore produces many
+     * long, high-voting lines in one or two orientations, and a prefix of the vote ranking fills up
+     * with them. An object sitting in that scene is comparatively small, so even its cleanest edges
+     * poll below the background, and the edges facing away from the light poll lower still.
+     *
+     * Measured on the real tiled-floor frames, the object's two strongest edges landed at ranks 3
+     * and 13 while the two perpendicular ones landed at 122 and 161 of 161 -- so the object had a
+     * usable pair in one direction and nothing at all in the other, and no quad could ever close.
+     * Raising the prefix does not fix that: it admits far more background combinations than object
+     * ones, and both widenings tried that way measured WORSE than doing nothing.
+     *
+     * Taking a fixed share per orientation instead costs nothing in budget and gives a weaker
+     * direction room to survive alongside a dominant one. It is worth being precise about what this
+     * buys: it only puts the object's edges in front of the scorer. Whether the right quad then wins
+     * is the scorer's job, and widening this selection is only safe once the scorer can tell a
+     * coherent object from a well-formed piece of background -- doing it in the other order is what
+     * produced the two regressions above.
+     */
+    private fun retainDiverseLines(lines: List<DetectedLine>): List<DetectedLine> {
+        if (lines.size <= MAX_LINES_CONSIDERED) return lines
+
+        // Buckets hold INDICES, not lines: two peaks may legitimately carry equal field values and
+        // must stay distinguishable, so nothing here depends on line equality.
+        val buckets = Array(ORIENTATION_BUCKETS) { ArrayList<Int>() }
+        for (index in lines.indices) buckets[orientationBucket(lines[index])].add(index)
+
+        // Round-robin: the strongest line of every orientation, then the second strongest, and so
+        // on. `lines` arrives sorted by votes, so each bucket is already in strength order and the
+        // whole selection is a pure function of the input.
+        val keep = BooleanArray(lines.size)
+        var kept = 0
+        var round = 0
+        while (kept < MAX_LINES_CONSIDERED) {
+            var added = false
+            for (bucket in buckets) {
+                if (round >= bucket.size) continue
+                keep[bucket[round]] = true
+                kept++
+                added = true
+                if (kept >= MAX_LINES_CONSIDERED) break
+            }
+            if (!added) break
+            round++
+        }
+        // Emit in the original vote order so everything downstream sees the strongest evidence
+        // first, exactly as it did when the prefix was a simple `take`.
+        return lines.filterIndexed { index, _ -> keep[index] }
+    }
+
+    /**
+     * Near-parallel line pairs far enough apart to bound something, spread across orientations.
+     *
+     * The pair budget needs the same protection as the line budget for the same reason. Even after
+     * [retainDiverseLines] has kept a weak orientation alive, a dominant one still contributes far
+     * more *combinations* -- with several near-parallel members it produces pairs quadratically --
+     * so a first-come cut of the i<j walk would spend the whole allowance before reaching the
+     * orientation that only has two members. Taking pairs in rounds across orientations keeps the
+     * cost identical and the coverage even.
+     */
     private fun oppositeEdgePairs(
-        lines: List<DetectedLine>,
+        considered: List<DetectedLine>,
         width: Int,
         height: Int,
         config: MainScanEdgeConfig
     ): List<Pair<DetectedLine, DetectedLine>> {
         val diagonal = sqrt((width * width + height * height).toDouble()).toFloat()
         val minSeparation = diagonal * config.minSeparationFraction
-        val considered = lines.take(MAX_LINES_CONSIDERED)
         val tolerance = config.parallelToleranceDegrees.toRadians()
 
-        // Both members come from the strong lines.
-        //
-        // This is what currently prevents the tiled-floor fixture from ever assembling the package:
-        // its top, right and bottom edges rank 1st, 2nd and 12th, but its shadowed left edge ranks
-        // 160th of 161, so the right/left pair never forms. Two ways of widening the search were
-        // measured and BOTH made the result worse, because the candidate scorer cannot tell the
-        // package from any other well-supported quad:
-        //
-        //   both members from the long tail  -> mean corner error 0.237 -> 0.315 (thin slivers)
-        //   strong anchor + any partner      -> mean corner error 0.237 -> 0.397 (corners off-frame)
-        //
-        // So the fix belongs in scoring, not here. Widening this loop again without first making the
-        // scorer prefer a coherent object will only repeat those measurements.
-        val pairs = ArrayList<Pair<DetectedLine, DetectedLine>>()
+        val byBucket = Array(ORIENTATION_BUCKETS) { ArrayList<Pair<DetectedLine, DetectedLine>>() }
         for (i in considered.indices) {
             for (j in i + 1 until considered.size) {
                 val a = considered[i]
                 val b = considered[j]
                 if (angularDistance(a.theta, b.theta) > tolerance) continue
                 if (separation(a, b) < minSeparation) continue
-                pairs.add(a to b)
-                if (pairs.size >= MAX_PAIRS) return pairs
+                byBucket[orientationBucket(a)].add(a to b)
             }
+        }
+
+        val pairs = ArrayList<Pair<DetectedLine, DetectedLine>>(MAX_PAIRS)
+        var round = 0
+        while (pairs.size < MAX_PAIRS) {
+            var added = false
+            for (bucket in byBucket) {
+                if (round >= bucket.size) continue
+                pairs.add(bucket[round])
+                added = true
+                if (pairs.size >= MAX_PAIRS) break
+            }
+            if (!added) break
+            round++
         }
         return pairs
     }
@@ -563,7 +639,7 @@ object MainScanEdgeQuadFinder {
     }
 
     /**
-     * Fraction of the four corners that have edge evidence where the sides actually meet.
+     * Fraction of the four corners where the sides genuinely meet.
      *
      * Side support alone lets a candidate borrow one edge from one object and the next from another:
      * on-device the quad took its left edge from the package being held up and its top and bottom
@@ -572,6 +648,28 @@ object MainScanEdgeQuadFinder {
      * edge lies in empty space, because those two lines never meet on any real object. Sampling
      * whole sides barely notices one bad endpoint out of forty; checking corners directly makes it
      * decisive.
+     *
+     * ## Why a bare corner is not on its own disqualifying
+     *
+     * Asking only for a mask pixel AT the corner also rejects real documents. A corner is the one
+     * place on a boundary where two edges meet at an angle, so the gradient there is split between
+     * two directions and is weaker than along either side; put that corner in shadow and the edge
+     * mask can simply have no pixel there. Measured on real frames, a correctly outlined object lost
+     * two of its four corners this way and was zeroed outright while a background rectangle kept all
+     * four -- the check was removing the right answer, not a wrong one.
+     *
+     * So the check asks the question it is really about: do the two sides actually run INTO each
+     * other here? Each side is sampled over the short stretch approaching the corner, and the corner
+     * counts only when both are drawn on right up to it.
+     *
+     * That phrasing is also strictly sharper than testing the corner pixel itself, which passes
+     * whenever ANY evidence lies nearby -- including evidence belonging to only one of the two
+     * lines. A quad that takes its verticals from a printed panel and its horizontals from the page
+     * around it has all four corners sitting on the page's own edges, so the pixel test sees four
+     * good corners and waves through a shape that is half one object and half another. Asking both
+     * sides to arrive rejects it, because the panel's edge stops well short of the corner: the last
+     * stretch of that side is empty. A real corner in shadow still passes, because both of its sides
+     * really do continue in.
      */
     private fun cornerSupport(
         corners: List<CropPoint>,
@@ -580,31 +678,37 @@ object MainScanEdgeQuadFinder {
         height: Int
     ): Float {
         var supported = 0
-        for (corner in corners) {
-            if (hasEdgeWithin(corner, CORNER_RADIUS, mask, width, height)) supported++
+        for (i in 0 until 4) {
+            val fromPrevious = approachSupport(corners[(i + 3) % 4], corners[i], mask, width, height)
+            val fromNext = approachSupport(corners[(i + 1) % 4], corners[i], mask, width, height)
+            if (fromPrevious >= MIN_CONNECTION_SUPPORT && fromNext >= MIN_CONNECTION_SUPPORT) supported++
         }
         return supported.toFloat() / corners.size
     }
 
-    private fun hasEdgeWithin(
-        point: CropPoint,
-        radius: Int,
+    /**
+     * How well the stretch of the side [from] -> [to] that lies nearest [to] is drawn on.
+     *
+     * Deliberately only the last [CONNECTION_FRACTION] of the side: the question is whether this
+     * edge continues all the way into the corner, and averaging over the whole side would let a
+     * strongly-supported middle hide an endpoint hanging in space -- the very thing corner support
+     * exists to catch.
+     */
+    private fun approachSupport(
+        from: CropPoint,
+        to: CropPoint,
         mask: BooleanArray,
         width: Int,
         height: Int
-    ): Boolean {
-        val cx = point.x.roundToInt()
-        val cy = point.y.roundToInt()
-        for (dy in -radius..radius) {
-            val yy = cy + dy
-            if (yy < 0 || yy >= height) continue
-            for (dx in -radius..radius) {
-                val xx = cx + dx
-                if (xx < 0 || xx >= width) continue
-                if (mask[yy * width + xx]) return true
-            }
+    ): Float {
+        var hits = 0
+        for (s in 0 until CONNECTION_SAMPLES) {
+            val along = 1f - CONNECTION_FRACTION * (s.toFloat() / (CONNECTION_SAMPLES - 1))
+            val x = (from.x + (to.x - from.x) * along).roundToInt()
+            val y = (from.y + (to.y - from.y) * along).roundToInt()
+            if (hasEdgeNear(x, y, mask, width, height)) hits++
         }
-        return false
+        return hits.toFloat() / CONNECTION_SAMPLES
     }
 
     private fun pixelCorners(quad: PerspectiveQuad, width: Int, height: Int): List<CropPoint> =
@@ -784,13 +888,29 @@ object MainScanEdgeQuadFinder {
     /**
      * Peaks examined when pairing edges.
      *
-     * Measured on the tiled-floor fixture, this cut is why the package cannot be selected: its top,
-     * right and bottom edges rank 1st, 2nd and 12th, but its shadowed left edge ranks 160th of 161,
-     * so the quad can never be assembled. Simply raising the cut is NOT the answer -- at 200 the
-     * extra lines produced thin slivers built from floor seams and the mean corner error rose from
-     * 0.237 to 0.315. The real fix belongs in scoring, not in this cap.
+     * The size of this allowance was never the problem; how it was SPENT was. Taken as a prefix of
+     * the vote ranking it filled with whichever orientation the background repeated most, and an
+     * object's weaker-facing edges fell outside it however many lines were admitted -- raising the
+     * cut to 200 simply bought more background combinations and measured worse, not better.
+     * [retainDiverseLines] spends the same allowance across orientations instead, which is what
+     * lets a weaker direction survive alongside a dominant one at no extra cost.
+     *
+     * Note the ordering that makes widening safe at all: a broader selection is only an improvement
+     * once the scorer can reject the degenerate shapes that a broader selection contains. Widening
+     * first and scoring second is what produced the earlier regressions.
      */
     private const val MAX_LINES_CONSIDERED = 40
+
+    /**
+     * Width of an orientation bucket, in degrees, and the number of buckets spanning the 180 degrees
+     * of undirected line orientation.
+     *
+     * Wide enough that one physical edge and its perspective-skewed opposite share a bucket -- they
+     * differ by up to [MainScanEdgeConfig.parallelToleranceDegrees] -- and narrow enough that two
+     * genuinely different directions do not.
+     */
+    private const val ORIENTATION_BUCKET_DEGREES = 20
+    private const val ORIENTATION_BUCKETS = 180 / ORIENTATION_BUCKET_DEGREES
 
     private const val HISTOGRAM_BINS = 256
 
@@ -823,17 +943,32 @@ object MainScanEdgeQuadFinder {
     private const val SEGMENT_SAMPLES = 40
     private const val SUPPORT_RADIUS = 2
 
-    /**
-     * Corners must sit on real edge evidence. Slightly wider than [SUPPORT_RADIUS] because a corner
-     * is where two quantised Hough lines meet, so its position carries both lines' rounding error.
-     */
-    private const val CORNER_RADIUS = 4
-
     /** At most one corner may hang in empty space; two means the sides came from different objects. */
     private const val MIN_CORNER_SUPPORT = 0.75f
 
-    /** Weight of the interior-crossing penalty. */
-    private const val INTERIOR_PENALTY = 0.85f
+    /** Share of a side, measured inwards from the corner, that must show the side arriving there. */
+    private const val CONNECTION_FRACTION = 0.22f
+    private const val CONNECTION_SAMPLES = 10
+
+    /** How much of that approach must be drawn on for the two sides to count as meeting. */
+    private const val MIN_CONNECTION_SUPPORT = 0.5f
+
+    /**
+     * Weight of the interior-crossing penalty.
+     *
+     * Strong enough to settle a close contest, deliberately not strong enough to decide one on its
+     * own. At its original 0.85 a single crossing line could remove five sixths of a candidate's
+     * score, and that turned out to punish real documents hardest: printed content, folds, panel
+     * seams and rules all cross a genuine page's middle and are all well drawn on, whereas a patch
+     * of background often has a perfectly empty interior. Measured on real frames the correctly
+     * outlined object carried a HIGHER interior penalty than the background rectangle it was losing
+     * to, so the term was actively inverting the comparison.
+     *
+     * The signal itself is still real -- a quad that has overshot the true boundary does have that
+     * boundary running across it -- so the term stays, weighted as one piece of evidence among
+     * several rather than as a veto.
+     */
+    private const val INTERIOR_PENALTY = 0.40f
 
     /** A crossing line counts as interior only within this fraction of the quad's narrow half-width. */
     private const val INTERIOR_BAND = 0.65f
