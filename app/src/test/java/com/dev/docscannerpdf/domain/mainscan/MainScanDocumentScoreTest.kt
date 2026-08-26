@@ -78,6 +78,53 @@ class MainScanDocumentScoreTest {
         bottomLeft = CropPoint(0.10f, 0.80f)
     )
 
+    /**
+     * A modest page filling about a ninth of the frame — a document photographed from further back.
+     * Smaller than [cleanDocument] on every axis, but still plainly a page a user meant to scan.
+     */
+    private val smallDocument = PerspectiveQuad(
+        topLeft = CropPoint(0.30f, 0.30f),
+        topRight = CropPoint(0.62f, 0.30f),
+        bottomRight = CropPoint(0.62f, 0.66f),
+        bottomLeft = CropPoint(0.30f, 0.66f)
+    )
+
+    /** Steep perspective: a page seen from above, converging hard toward the top of the frame. */
+    private val steepPerspectiveDocument = PerspectiveQuad(
+        topLeft = CropPoint(0.26f, 0.22f),
+        topRight = CropPoint(0.74f, 0.22f),
+        bottomRight = CropPoint(0.86f, 0.80f),
+        bottomLeft = CropPoint(0.14f, 0.80f)
+    )
+
+    /** Same centre and height as [smallDocument], half the width — used only to compare proportions. */
+    private val halfWidthDocument = PerspectiveQuad(
+        topLeft = CropPoint(0.38f, 0.30f),
+        topRight = CropPoint(0.54f, 0.30f),
+        bottomRight = CropPoint(0.54f, 0.66f),
+        bottomLeft = CropPoint(0.38f, 0.66f)
+    )
+
+    /**
+     * A geometrically PERFECT thin rectangle: exact right angles, exactly parallel opposite edges,
+     * comfortably inside the frame. Every component the scorer measures except size is ideal, which
+     * is precisely why it is the dangerous case — nothing but its proportions gives it away.
+     */
+    private val perfectSliver = PerspectiveQuad(
+        topLeft = CropPoint(0.60f, 0.20f),
+        topRight = CropPoint(0.68f, 0.20f),
+        bottomRight = CropPoint(0.68f, 0.47f),
+        bottomLeft = CropPoint(0.60f, 0.47f)
+    )
+
+    /** A long thin band spanning most of the frame: large enough in area, far too narrow to be a page. */
+    private val narrowBand = PerspectiveQuad(
+        topLeft = CropPoint(0.40f, 0.20f),
+        topRight = CropPoint(0.46f, 0.20f),
+        bottomRight = CropPoint(0.46f, 0.80f),
+        bottomLeft = CropPoint(0.40f, 0.80f)
+    )
+
     private fun score(quad: PerspectiveQuad) = MainScanDocumentScore.overall(quad)
 
     // --- genuine documents must score well -----------------------------------------------------
@@ -164,6 +211,116 @@ class MainScanDocumentScoreTest {
         assertFalse(MainScanDocumentScore.isViable(sliver))
     }
 
+    // --- proportion must be structural, not a tie-breaker -------------------------------------------
+
+    /**
+     * The population-level defect this section exists for.
+     *
+     * When candidate generation is broadened, the scorer stops choosing between a handful of
+     * plausible shapes and starts choosing among hundreds of thousands of arbitrary line
+     * intersections. In that population, thin slivers are abundant and they are geometrically
+     * PERFECT — exact right angles, exactly parallel sides — so every component except size rates
+     * them ideally. Measured on real frames, a sliver of roughly 2% frame area still retained about
+     * 0.70 overall and out-scored the real document.
+     *
+     * The lesson is the one the boundary term already encodes: some properties invalidate the
+     * rectangularity evidence rather than merely offsetting it. "This shape is too thin to be a page"
+     * is one of them, so proportion has to scale the result instead of contributing a small share of
+     * it. These tests fix that as a requirement rather than as a tuning preference.
+     */
+    @Test
+    fun aGeometricallyPerfectSliverIsNotCompetitiveWithAnyRealDocument() {
+        val sliver = score(perfectSliver)
+        assertTrue("perfectSliver=$sliver", sliver < score(cleanDocument))
+        assertTrue("perfectSliver=$sliver", sliver < score(smallDocument))
+        assertTrue("perfectSliver=$sliver", sliver < score(tiltedDocument))
+        assertTrue("perfectSliver=$sliver", sliver < score(rotatedDocument))
+        assertFalse("perfectSliver=$sliver must not be offered at all", MainScanDocumentScore.isViable(perfectSliver))
+    }
+
+    @Test
+    fun idealAnglesAndParallelismCannotCarryASliverOnTheirOwn() {
+        // The sliver's corner and parallelism components are maximal — this asserts that being a
+        // flawless rectangle is not, by itself, enough to stay in contention.
+        val components = MainScanDocumentScore.score(perfectSliver)
+        assertEquals("corner angles are ideal", 1f, components.cornerAngle, 0.02f)
+        assertEquals("opposite edges are exactly parallel", 1f, components.parallelism, 0.02f)
+        assertTrue(
+            "two ideal components still leave overall=${components.overall} too high",
+            components.overall < 0.45f
+        )
+    }
+
+    @Test
+    fun aNarrowBandWithAmpleAreaIsStillRejected() {
+        // Area alone must not rescue a shape: this band covers more of the frame than some accepted
+        // documents, and is rejected purely on how narrow it is.
+        assertFalse("narrowBand=${score(narrowBand)}", MainScanDocumentScore.isViable(narrowBand))
+        assertTrue("narrowBand=${score(narrowBand)}", score(narrowBand) < score(smallDocument))
+    }
+
+    @Test
+    fun narrownessIsGradedNotCliffEdged() {
+        // Three rectangles that differ ONLY in width, all axis-aligned and all well inside the
+        // frame, so every other component is identical by construction. Scores must decrease as the
+        // shape narrows — a cliff would make the correction brittle and would let a shape just the
+        // right side of a threshold keep winning.
+        val full = score(smallDocument)
+        val half = score(halfWidthDocument)
+        val sliver = score(perfectSliver)
+        assertTrue("small=$full halfWidth=$half", half < full)
+        assertTrue("halfWidth=$half sliver=$sliver", sliver < half)
+    }
+
+    // --- and the shapes that must survive that correction --------------------------------------------
+
+    @Test
+    fun aSmallButPlausibleDocumentRemainsViable() {
+        // The regression risk of penalising narrow shapes: a page shot from further back is smaller
+        // on every axis but is still the thing the user is scanning.
+        assertTrue("smallDocument=${score(smallDocument)}", MainScanDocumentScore.isViable(smallDocument))
+        assertTrue(score(smallDocument) > 0.80f)
+    }
+
+    @Test
+    fun steepPerspectiveRemainsViable() {
+        assertTrue(
+            "steepPerspective=${score(steepPerspectiveDocument)}",
+            MainScanDocumentScore.isViable(steepPerspectiveDocument)
+        )
+    }
+
+    @Test
+    fun everyGenuineDocumentOutScoresEveryDegenerateShape() {
+        val documents = mapOf(
+            "clean" to cleanDocument,
+            "tilted" to tiltedDocument,
+            "closeUp" to closeUpDocument,
+            "rotated" to rotatedDocument,
+            "small" to smallDocument,
+            "steepPerspective" to steepPerspectiveDocument
+        )
+        val degenerate = mapOf(
+            "perfectSliver" to perfectSliver,
+            "narrowBand" to narrowBand,
+            "frameBoundary" to frameBoundary
+        )
+        for ((documentName, document) in documents) {
+            for ((badName, bad) in degenerate) {
+                assertTrue(
+                    "$badName=${score(bad)} must score below $documentName=${score(document)}",
+                    score(bad) < score(document)
+                )
+            }
+        }
+    }
+
+    @Test
+    fun theFullFrameBorderIsNotRewardedForCoveringEverything() {
+        // Covering the frame is not evidence of being a document; it is evidence of being the frame.
+        assertFalse("frameBoundary=${score(frameBoundary)}", MainScanDocumentScore.isViable(frameBoundary))
+    }
+
     // --- determinism -------------------------------------------------------------------------------
 
     @Test
@@ -178,7 +335,8 @@ class MainScanDocumentScoreTest {
     fun everyComponentStaysInRange() {
         for (quad in listOf(
             cleanDocument, tiltedDocument, closeUpDocument,
-            frameBoundary, wallCorner, rotatedDocument, parallelogram
+            frameBoundary, wallCorner, rotatedDocument, parallelogram,
+            smallDocument, steepPerspectiveDocument, perfectSliver, narrowBand, halfWidthDocument
         )) {
             val s = MainScanDocumentScore.score(quad)
             for ((name, value) in listOf(

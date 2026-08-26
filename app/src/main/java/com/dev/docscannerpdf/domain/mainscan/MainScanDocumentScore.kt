@@ -21,11 +21,25 @@ data class MainScanShapeScore(
      * Weighted overall score in 0..1. A non-convex shape scores zero outright — it is not a
      * quadrilateral a page could occupy, so no combination of other merits should rescue it.
      *
-     * [boundary] is applied as a MULTIPLIER rather than another weighted term. As an additive
-     * component it cannot do its job: the image boundary is a geometrically perfect rectangle, so it
+     * Two of the five components are applied as MULTIPLIERS rather than weighted terms, because
+     * each of them invalidates the rectangularity evidence rather than merely offsetting it.
+     *
+     * [boundary] was the first. The image boundary is a geometrically perfect rectangle, so it
      * scores maximum on angles, parallelism and side length, and a 20% additive penalty still leaves
-     * it comfortably above any threshold. It has to scale the whole result, because "this shape is
-     * the frame" invalidates the rectangularity evidence rather than merely offsetting it.
+     * it comfortably above any threshold. "This shape is the frame" has to scale the whole result.
+     *
+     * [minimumSide] is the second, for exactly the same reason, and it was added once candidate
+     * generation grew broad enough to expose it. As a 0.10-weighted additive term it could not do
+     * its job: a sliver a few percent of the frame across is *also* a geometrically perfect
+     * rectangle — exact right angles, exactly parallel opposite sides — so it collected the full
+     * corner and parallelism weight and still totalled around 0.70, comfortably out-scoring real
+     * documents. Slivers are rare among a handful of hand-picked candidates and abundant among
+     * hundreds of thousands of line intersections, which is why a term that looked adequate at one
+     * population size failed at another. "This shape is too thin to be a page" is a disqualification,
+     * not a deduction, so proportion scales the result too.
+     *
+     * Both multipliers are graded rather than thresholded, so a shape that is merely small or merely
+     * close to the border loses ground smoothly instead of falling off a cliff.
      */
     val overall: Float
         get() = if (!convex) {
@@ -33,19 +47,27 @@ data class MainScanShapeScore(
         } else {
             val shape = W_CORNER_ANGLE * cornerAngle +
                 W_PARALLELISM * parallelism +
-                W_COVERAGE * coverage +
-                W_MINIMUM_SIDE * minimumSide
-            shape * (1f - BOUNDARY_INFLUENCE * (1f - boundary))
+                W_COVERAGE * coverage
+            shape *
+                (1f - BOUNDARY_INFLUENCE * (1f - boundary)) *
+                (1f - PROPORTION_INFLUENCE * (1f - minimumSide))
         }
 
     private companion object {
-        const val W_CORNER_ANGLE = 0.36f
-        const val W_PARALLELISM = 0.31f
-        const val W_COVERAGE = 0.23f
-        const val W_MINIMUM_SIDE = 0.10f
+        const val W_CORNER_ANGLE = 0.40f
+        const val W_PARALLELISM = 0.35f
+        const val W_COVERAGE = 0.25f
 
         /** How much a fully edge-hugging shape is discounted: 0.75 leaves it a quarter of its score. */
         const val BOUNDARY_INFLUENCE = 0.75f
+
+        /**
+         * How much a shape too narrow to be a page is discounted.
+         *
+         * Full influence: a quad with a vanishing side is not a document at any score, and anything
+         * short of full influence leaves a floor that the sheer abundance of slivers will find.
+         */
+        const val PROPORTION_INFLUENCE = 1f
     }
 }
 

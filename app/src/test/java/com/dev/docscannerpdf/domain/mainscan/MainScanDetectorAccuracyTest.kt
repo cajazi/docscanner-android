@@ -27,15 +27,15 @@ import org.junit.Test
  *
  * ## What the ceiling means
  *
- * [CHARACTERIZATION_MAX_MEAN_CORNER_ERROR] is a *characterization* ceiling: it pins the detector's
- * present real-scene behaviour so a regression is caught, and it is not the quality bar the product
- * needs. The bar the product needs is [PRODUCT_TARGET_MEAN_CORNER_ERROR] — the tolerance the fixture
- * pack itself was annotated with.
+ * The ceiling is [PRODUCT_TARGET_MEAN_CORNER_ERROR] — the tolerance the fixture pack itself was
+ * annotated with, and the bar at which the drawn boundary sits ON the package's real outer edge
+ * rather than near it. It was earned rather than assumed: this replaced a characterization ceiling
+ * of 0.30, which had stood while the detector selected a floor-seam rectangle spanning the frame
+ * instead of the package, at an error of roughly 0.235.
  *
- * Note what is deliberately absent: there is no assertion that the detector is *worse* than the
- * product target. Encoding today's defect as required behaviour would make the eventual fix look
- * like a break. The ceiling drops from 0.30 to 0.07 in the slice where the algorithm earns it, and
- * nothing here has to be rewritten for that to happen — only the constant moves.
+ * The headroom between the measured errors and the ceiling is deliberate and small. It is there for
+ * incidental float drift, not for a regression to hide in: falling back onto background structure
+ * moves the error by about 0.18, which this catches outright.
  *
  * Ground truth stays evaluation-only. It is read here and nowhere else; the detector never sees it.
  */
@@ -44,22 +44,20 @@ class MainScanDetectorAccuracyTest {
     private companion object {
 
         /**
-         * Regression ceiling for the mean corner error over the real-scene pack.
-         *
-         * Set from the measured baseline of this detector on these frames, with headroom for
-         * nothing more than incidental float drift. It is tight enough that the tuning attempts
-         * already rejected on this scene would trip it, and green on the detector as it ships.
-         */
-        const val CHARACTERIZATION_MAX_MEAN_CORNER_ERROR = 0.30f
-
-        /**
-         * PRODUCT_TARGET_MEAN_CORNER_ERROR — where the ceiling above must eventually land.
+         * PRODUCT_TARGET_MEAN_CORNER_ERROR — the enforced ceiling, per frame and in aggregate.
          *
          * This is [MainScanRealSceneFixtures.TOLERANCE], the annotation tolerance of the fixture
-         * pack: at this error the drawn boundary sits on the package's real outer edge rather than
-         * near it. It is recorded, not asserted, until the detector can hold it.
+         * pack. Do not raise it to accommodate a change: the pack describes the package, not the
+         * detector, and a detector that cannot hold this is not on the outer boundary.
          */
         const val PRODUCT_TARGET_MEAN_CORNER_ERROR = 0.07f
+
+        /**
+         * The error produced while the detector selected the floor-seam rectangle rather than the
+         * package. Asserted as a level the detector must stay far below, so that the specific
+         * regression this slice fixed cannot return quietly under a loosened ceiling.
+         */
+        const val FLOOR_SEAM_REGRESSION_ERROR = 0.23f
     }
 
     /** One frame's measurement, kept together so failure messages can name the frame. */
@@ -110,15 +108,12 @@ class MainScanDetectorAccuracyTest {
 
         assertTrue(
             "real-scene accuracy regressed.\n" +
-                "aggregate mean corner error %.4f exceeds the characterization ceiling %.2f\n".format(
+                "aggregate mean corner error %.4f exceeds the product ceiling %.2f\n".format(
                     aggregate,
-                    CHARACTERIZATION_MAX_MEAN_CORNER_ERROR
+                    PRODUCT_TARGET_MEAN_CORNER_ERROR
                 ) +
-                "(product target is %.2f)\nper frame:\n%s".format(
-                    PRODUCT_TARGET_MEAN_CORNER_ERROR,
-                    report
-                ),
-            aggregate <= CHARACTERIZATION_MAX_MEAN_CORNER_ERROR
+                "per frame:\n%s".format(report),
+            aggregate <= PRODUCT_TARGET_MEAN_CORNER_ERROR
         )
     }
 
@@ -129,17 +124,70 @@ class MainScanDetectorAccuracyTest {
      * and a detector that loses the object on one frame in three has not improved.
      */
     @Test
-    fun everyFrameIndividuallyStaysUnderTheCharacterizationCeiling() {
+    fun everyFrameIndividuallyStaysUnderTheProductCeiling() {
         for (measurement in measureAll()) {
             assertTrue(
-                "%s mean corner error %.4f exceeds the characterization ceiling %.2f; quad=%s".format(
+                "%s mean corner error %.4f exceeds the product ceiling %.2f; quad=%s".format(
                     measurement.name,
                     measurement.error,
-                    CHARACTERIZATION_MAX_MEAN_CORNER_ERROR,
+                    PRODUCT_TARGET_MEAN_CORNER_ERROR,
                     MainScanRealSceneFixtures.describe(measurement.quad)
                 ),
-                measurement.error <= CHARACTERIZATION_MAX_MEAN_CORNER_ERROR
+                measurement.error <= PRODUCT_TARGET_MEAN_CORNER_ERROR
             )
+        }
+    }
+
+    /**
+     * The specific defect this slice removed: the detector used to return a long, tilted rectangle
+     * built from the floor's seams, roughly 1.5x the package's area and overlapping it barely.
+     *
+     * Stated as its own assertion rather than left implicit in the ceiling, because it is the
+     * failure a future change is most likely to reintroduce, and because it names what "wrong" looks
+     * like on this scene instead of only how far away it is.
+     */
+    @Test
+    fun theDetectorIsNowhereNearTheFloorSeamRectangleItUsedToReturn() {
+        for (measurement in measureAll()) {
+            assertTrue(
+                "%s is back on background structure: error %.4f is at the floor-seam level %.2f; quad=%s"
+                    .format(
+                        measurement.name,
+                        measurement.error,
+                        FLOOR_SEAM_REGRESSION_ERROR,
+                        MainScanRealSceneFixtures.describe(measurement.quad)
+                    ),
+                measurement.error < FLOOR_SEAM_REGRESSION_ERROR
+            )
+        }
+    }
+
+    /**
+     * Every corner sits on the package, not merely near it on average.
+     *
+     * A mean can be met by a quad that is right on three corners and badly wrong on the fourth,
+     * which is exactly the shape of a candidate that borrowed one side from the background.
+     */
+    @Test
+    fun everyIndividualCornerLandsOnThePackage() {
+        val expected = MainScanRealSceneFixtures.corners(MainScanRealSceneFixtures.packageQuad)
+        for (measurement in measureAll()) {
+            val actual = MainScanRealSceneFixtures.corners(measurement.quad)
+            for (i in 0 until 4) {
+                val distance = kotlin.math.hypot(
+                    actual[i].x - expected[i].x,
+                    actual[i].y - expected[i].y
+                )
+                assertTrue(
+                    "%s corner %d is %.4f from the package corner; quad=%s".format(
+                        measurement.name,
+                        i,
+                        distance,
+                        MainScanRealSceneFixtures.describe(measurement.quad)
+                    ),
+                    distance <= MainScanRealSceneFixtures.SEQUENCE_TOLERANCE
+                )
+            }
         }
     }
 
@@ -259,8 +307,7 @@ class MainScanDetectorAccuracyTest {
             )
         }
         println("AGGREGATE_MEAN_CORNER_ERROR=%.4f".format(aggregate))
-        println("CHARACTERIZATION_CEILING=%.2f".format(CHARACTERIZATION_MAX_MEAN_CORNER_ERROR))
-        println("PRODUCT_TARGET=%.2f".format(PRODUCT_TARGET_MEAN_CORNER_ERROR))
+        println("ENFORCED_CEILING=%.2f".format(PRODUCT_TARGET_MEAN_CORNER_ERROR))
         assertEquals(3, measurements.size)
     }
 }
