@@ -1,6 +1,7 @@
 package com.dev.docscannerpdf.domain.mainscan
 
 import java.io.File
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
@@ -99,7 +100,10 @@ class MainScanPipelineTeardownTest {
         for (field in listOf(
             "mainScanEnhancedImage",
             "mainScanCroppedImage",
-            "mainScanWorkingImage"
+            "mainScanWorkingImage",
+            // The authoritative artifact belongs to the visit that produced it. Surviving teardown
+            // would leave a previous page's full-resolution files as the thing a Confirm would save.
+            "mainScanAuthoritative"
         )) {
             assertTrue(
                 "$field must be released by the teardown",
@@ -190,5 +194,170 @@ class MainScanPipelineTeardownTest {
             "the visit id must advance so in-flight results cannot publish",
             next.sessionId > captured.sessionId
         )
+    }
+
+    // --- the authoritative artifact's publication transaction ------------------------------------
+    //
+    // The artifact is the only persistable output of this pipeline, and its whole value depends on
+    // WHEN each step happens. Publishing before validating, deleting before publishing, or clearing
+    // after a suspension all produce a state in which the UI is correct and the file a future
+    // Confirm would write is not. Each of those orderings is asserted below on the real source.
+
+    @Test
+    fun theTargetPathsAreOwnedBeforeAnythingIsWritten() {
+        val body = functionBody(activitySource(), "renderMainScanAuthoritative")
+        val ledger = body.indexOf("MainScanCaptureFlow.withOwnedUri(")
+        val render = body.indexOf("MainScanCaptureProcessor.renderAuthoritative(")
+        assertTrue("both target paths must enter the ledger", ledger >= 0)
+        assertTrue("the render must be reached", render >= 0)
+        assertTrue(
+            "a path created outside the ledger is a path no sweep can find, and the write is " +
+                "exactly the window a failure lands in",
+            ledger < render
+        )
+    }
+
+    @Test
+    fun supersededFilesAreDeletedOnlyAfterTheReplacementIsPublished() {
+        val body = functionBody(activitySource(), "renderMainScanAuthoritative")
+        val publish = body.indexOf("mainScanAuthoritative = outcome.artifact")
+        val delete = body.indexOf("sweepMainScanAuthoritativeFiles(")
+        assertTrue("the new artifact must be published", publish >= 0)
+        assertTrue("the superseded artifact must be retired", delete >= 0)
+        assertTrue(
+            "deleting first would leave the field pointing at files that no longer exist if the " +
+                "publication never happened",
+            publish < delete
+        )
+    }
+
+    @Test
+    fun aFailedReplacementLeavesTheExistingArtifactAlone() {
+        val body = functionBody(activitySource(), "renderMainScanAuthoritative")
+        val failureBranch = body.substringAfter("is MainScanRenderOutcome.NonAuthoritative")
+        assertTrue("the failure branch must exist", failureBranch.isNotEmpty())
+        assertFalse(
+            "a failed render must not touch the published artifact — the previous one is still " +
+                "valid and is still the thing a Confirm would save",
+            failureBranch.contains("mainScanAuthoritative = ")
+        )
+        assertTrue(
+            "the failed candidate's own files must still be cleaned",
+            failureBranch.contains("sweepMainScanOwnedUris(")
+        )
+    }
+
+    @Test
+    fun theAuthoritativeFieldIsAssignedOnlyInTheThreeApprovedPlaces() {
+        // Publication, Back, and teardown. A fourth assignment anywhere would be a way for the
+        // field to be set without the transaction that makes it trustworthy.
+        val source = activitySource()
+        assertEquals(
+            "mainScanAuthoritative may only be published once and cleared twice",
+            3,
+            occurrences(source, "mainScanAuthoritative = ")
+        )
+        assertTrue(
+            functionBody(source, "renderMainScanAuthoritative")
+                .contains("mainScanAuthoritative = outcome.artifact")
+        )
+        assertTrue(
+            functionBody(source, "backFromMainScanReview").contains("mainScanAuthoritative = null")
+        )
+        assertTrue(
+            functionBody(source, "clearMainScanPipeline").contains("mainScanAuthoritative = null")
+        )
+    }
+
+    @Test
+    fun theArtifactIsNeverConstructedOutsideTheValidatedRender() {
+        // The type validates its own invariants, but only the render has done the work that makes
+        // them meaningful — the files exist, they decode at the expected size, and the decode was
+        // full resolution. Building one anywhere else would satisfy the constructor and mean nothing.
+        assertEquals(
+            0,
+            occurrences(activitySource(), "MainScanAuthoritativeArtifact(")
+        )
+    }
+
+    @Test
+    fun backInvalidatesAuthorityBeforeAnyIo() {
+        val source = activitySource()
+        val body = functionBody(source, "backFromMainScanReview")
+        val clear = body.indexOf("mainScanAuthoritative = null")
+        val sweep = body.indexOf("sweepMainScanAuthoritativeFiles(")
+        assertTrue("Back must clear the artifact", clear >= 0)
+        assertTrue("Back must clean the stale files", sweep >= 0)
+        assertTrue(
+            "the artifact describes a crop the user is about to change, so authority must go " +
+                "first — before anything that could suspend",
+            clear < sweep
+        )
+        assertFalse(
+            "Back must be synchronous: a suspension before the clear is a window in which a stale " +
+                "full-resolution page is still persistable",
+            source.contains("suspend fun backFromMainScanReview(")
+        )
+        assertTrue(
+            "the stale preview must go with it",
+            body.contains("releaseMainScanDerivedImages()")
+        )
+    }
+
+    @Test
+    fun theAuthoritativeTransactionPersistsNothing() {
+        val body = functionBody(activitySource(), "renderMainScanAuthoritative")
+        assertFalse("the transaction must never reach the database", body.contains("repository"))
+        assertFalse("no document may be created here", body.contains("viewModel.save"))
+        assertFalse("no stage beyond review may be entered", body.contains("MainScanStage."))
+    }
+
+    // --- persistence is still unreachable --------------------------------------------------------
+
+    @Test
+    fun noProductionCodeEntersConfirmingPersistingOrCompleted() {
+        // The artifact exists so a LATER slice can persist. This one must not: the stages after
+        // review stay unreachable, and the enum entries alone are not a way in.
+        val offenders = mainSourceFiles().flatMap { file ->
+            val text = file.readText()
+            listOf("Confirming", "Persisting", "Completed")
+                .filter { text.contains("mainScanStage = MainScanStage.$it") }
+                .map { "${file.name} -> $it" }
+        }
+        assertTrue("no stage past review may be entered: $offenders", offenders.isEmpty())
+    }
+
+    @Test
+    fun thePersistenceGateStillNamesOnlyPersisting() {
+        for (stage in MainScanStage.entries) {
+            assertEquals(
+                "only Persisting may allow persistence",
+                stage == MainScanStage.Persisting,
+                MainScanWorkflow.allowsPersistence(stage)
+            )
+        }
+        assertFalse(
+            "the review this slice ends at must not allow persistence",
+            MainScanWorkflow.allowsPersistence(MainScanStage.EnhancementReview)
+        )
+    }
+
+    // --- helpers for the additions above ----------------------------------------------------------
+
+    private fun occurrences(haystack: String, needle: String): Int {
+        var count = 0
+        var index = haystack.indexOf(needle)
+        while (index >= 0) {
+            count++
+            index = haystack.indexOf(needle, index + needle.length)
+        }
+        return count
+    }
+
+    private fun mainSourceFiles(): List<File> {
+        val candidates = listOf(File("src/main/java"), File("app/src/main/java"))
+        val root = candidates.firstOrNull { it.isDirectory }
+        assertNotNull("could not locate the main source set from ${File("").absolutePath}", root)
+        return root!!.walkTopDown().filter { it.isFile && it.extension == "kt" }.toList()
     }
 }
