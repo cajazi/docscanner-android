@@ -136,6 +136,10 @@ import com.dev.docscannerpdf.domain.idscan.PassportFailureStage
 import com.dev.docscannerpdf.domain.idscan.PassportWatermarkRenderer
 import androidx.core.net.toUri
 import com.dev.docscannerpdf.domain.mainscan.MainScanAnalysisResult
+import com.dev.docscannerpdf.domain.mainscan.MainScanAuthoritativeArtifact
+import com.dev.docscannerpdf.domain.mainscan.MainScanAuthoritativeRender
+import com.dev.docscannerpdf.domain.mainscan.MainScanRenderFailure
+import com.dev.docscannerpdf.domain.mainscan.MainScanRenderOutcome
 import com.dev.docscannerpdf.domain.mainscan.MainScanCaptureFlow
 import com.dev.docscannerpdf.domain.mainscan.MainScanCropEditor
 import com.dev.docscannerpdf.domain.mainscan.MainScanCropSeed
@@ -1318,9 +1322,18 @@ class MainActivity : FragmentActivity() {
     // write (capture must never persist), any generic Document Ready routing, and any raw-pixel
     // fallback after a failed capture.
 
-    /** Directory captured Main Scanner pages are written to — private app storage, never external. */
+    /**
+     * Directory captured Main Scanner pages are written to — private app storage, never external.
+     *
+     * The NAME comes from [MainScanAuthoritativeRender.CAPTURE_DIRECTORY_NAME], which is the same
+     * constant [MainScanAuthoritativeRender.isSupportedAuthoritativeSource] admits a source by. Two
+     * spellings of one directory is a defect waiting for a rename: captures would keep landing here
+     * while every one of them was refused as an unsupported source, and nothing but a device run
+     * would say so. This file already depends on that object for the two sibling directories below,
+     * so naming it here adds no dependency it did not have.
+     */
     internal val mainScanCaptureDirectory: File
-        get() = File(filesDir, "main_scan_capture")
+        get() = File(filesDir, MainScanAuthoritativeRender.CAPTURE_DIRECTORY_NAME)
 
     /** Whether the app-owned Main Scanner camera is showing. */
     internal var showMainScanCapture by mutableStateOf(false)
@@ -1349,7 +1362,15 @@ class MainActivity : FragmentActivity() {
         // moment when NOTHING in this directory can still be needed (no pending page exists yet, and
         // a saved document never lives here), so a full sweep is safe exactly here. It is not done on
         // the discard→camera path, which keeps its own visit ledger.
-        val directory = mainScanCaptureDirectory
+        //
+        // The two authoritative directories are swept on the SAME terms and for the same reason: an
+        // artifact written moments before a force-stop is referenced only by a ledger that died with
+        // the process, and a full-resolution page is a far larger thing to strand than a capture.
+        val directories = listOf(
+            mainScanCaptureDirectory,
+            mainScanCroppedDirectory,
+            mainScanEnhancedDirectory
+        )
         // Only files that already existed when this visit opened may be reclaimed. The sweep runs
         // asynchronously, so without this bound a capture completing before the enumeration could be
         // deleted out from under its own pending page — destroying the very frame the user is about
@@ -1358,17 +1379,19 @@ class MainActivity : FragmentActivity() {
         val visitOpenedAtMs = System.currentTimeMillis()
         lifecycleScope.launch {
             withContext(Dispatchers.IO) {
-                runCatching { if (!directory.isDirectory) directory.mkdirs() }
-                val reclaimed = runCatching {
-                    directory.listFiles()?.count { file ->
-                        file.isFile &&
-                            MainScanFileOwnership.isReclaimableOrphan(
-                                lastModifiedMs = file.lastModified(),
-                                visitOpenedAtMs = visitOpenedAtMs
-                            ) &&
-                            file.delete()
-                    } ?: 0
-                }.getOrDefault(0)
+                val reclaimed = directories.sumOf { directory ->
+                    runCatching { if (!directory.isDirectory) directory.mkdirs() }
+                    runCatching {
+                        directory.listFiles()?.count { file ->
+                            file.isFile &&
+                                MainScanFileOwnership.isReclaimableOrphan(
+                                    lastModifiedMs = file.lastModified(),
+                                    visitOpenedAtMs = visitOpenedAtMs
+                                ) &&
+                                file.delete()
+                        } ?: 0
+                    }.getOrDefault(0)
+                }
                 if (BuildConfig.DEBUG && reclaimed > 0) {
                     Log.d(MAIN_SCAN_TAG, "MAIN_SCAN_ORPHANS reclaimed=$reclaimed")
                 }
@@ -1527,7 +1550,38 @@ class MainActivity : FragmentActivity() {
     internal var mainScanCroppedImage by mutableStateOf<Bitmap?>(null)
     internal var mainScanEnhancedImage by mutableStateOf<Bitmap?>(null)
 
+    /**
+     * The ONLY persistable result of this pipeline: the source-resolution post-crop artifact.
+     *
+     * Every bitmap above is a PREVIEW. They are decoded at
+     * [MainScanCaptureImageLoader.MAX_WORKING_EDGE] so an interactive surface can hold them, which
+     * makes them right for the editor and unfit for the library — persisting one would quietly
+     * discard most of the capture. Keeping the authoritative result in its own field, of a type that
+     * cannot be built from a preview ([MainScanAuthoritativeArtifact]), is what makes "the preview
+     * was saved instead" unrepresentable rather than merely unlikely.
+     *
+     * Null means there is nothing a future Confirm may write. It is null before a render, null after
+     * a first render fails, and cleared SYNCHRONOUSLY the moment the polygon it was made from stops
+     * being the confirmed one.
+     */
+    internal var mainScanAuthoritative by mutableStateOf<MainScanAuthoritativeArtifact?>(null)
+
+    /**
+     * Why the last authoritative render produced nothing, or null when it succeeded or has not run.
+     * Held so the review can say something true about the high-quality result instead of implying
+     * the preview it is showing is one.
+     */
+    internal var mainScanAuthoritativeFailure by mutableStateOf<MainScanRenderFailure?>(null)
+
     private var mainScanProcessingJob: Job? = null
+
+    /** App-private directory for the authoritative cropped sibling. */
+    internal val mainScanCroppedDirectory: File
+        get() = File(filesDir, MainScanAuthoritativeRender.CROPPED_DIRECTORY_NAME)
+
+    /** App-private directory for the authoritative enhanced sibling. */
+    internal val mainScanEnhancedDirectory: File
+        get() = File(filesDir, MainScanAuthoritativeRender.ENHANCED_DIRECTORY_NAME)
 
     /**
      * Prepares the crop stage for a freshly accepted page: decode EXIF-upright off the main thread,
@@ -1620,6 +1674,9 @@ class MainActivity : FragmentActivity() {
     internal fun advanceMainScanCrop() {
         val state = mainScanCropState ?: return
         val working = mainScanWorkingImage ?: return
+        // The ORIGINAL capture, not the working copy: the authoritative render decodes it again at
+        // full resolution, so without it there is nothing to be authoritative about.
+        val pageUri = mainScanState.pendingPage?.uri?.toUri() ?: return
         if (!MainScanWorkflow.allowsAdvanceFromCrop(
                 stage = mainScanStage,
                 polygonValid = MainScanCropEditor.isApplicable(state)
@@ -1650,16 +1707,150 @@ class MainActivity : FragmentActivity() {
             } else {
                 mainScanEnhancedImage = enhanced
             }
+
+            // The previews above are what the user LOOKS at. The artifact below is what a future
+            // Confirm may actually write, and it is produced from the original capture at full
+            // resolution — never from the pixels on screen.
+            renderMainScanAuthoritative(
+                pageUri = pageUri,
+                cropState = state,
+                editorFrame = working
+            )
+
             mainScanStage = MainScanStage.EnhancementReview
             MainScanTrace.reviewReached(enhanced = enhanced != null)
         }
     }
 
-    /** Back from the enhancement review returns to crop editing without losing the polygon. */
+    /**
+     * Produces and publishes the authoritative artifact for [cropState], as a transaction.
+     *
+     * ## Order, and what each step is protecting against
+     *
+     * 1. Both target paths enter the visit's ownership ledger BEFORE the first byte is written. A
+     *    file created outside the ledger is a file no sweep can find, and the window it would be
+     *    unowned in is exactly the window a failure lands in.
+     * 2. The render either returns a fully validated artifact or a reason. There is no third result,
+     *    so nothing partially written can be mistaken for a success. That includes the frame check:
+     *    a reproduced frame that does not match [editorFrame] fails closed before anything is
+     *    written, rather than cropping a page the user never indicated.
+     * 3. Publication is a single assignment, and it happens BEFORE the superseded files are deleted.
+     *    Deleting first would mean a failure between the two left the pipeline with an artifact
+     *    field pointing at files that no longer exist.
+     * 4. A failed replacement changes nothing: the previously published artifact stays exactly as it
+     *    was, and only the candidate's own files are swept.
+     */
+    private suspend fun renderMainScanAuthoritative(
+        pageUri: Uri,
+        cropState: MainScanCropState,
+        editorFrame: MainScanWorkingImage
+    ) {
+        val previous = mainScanAuthoritative
+        val croppedTarget = File(
+            mainScanCroppedDirectory,
+            MainScanAuthoritativeRender.croppedFileName()
+        )
+        val enhancedTarget = File(
+            mainScanEnhancedDirectory,
+            MainScanAuthoritativeRender.enhancedFileName()
+        )
+        val croppedUri = Uri.fromFile(croppedTarget).toString()
+        val enhancedUri = Uri.fromFile(enhancedTarget).toString()
+        // Step 1 — owned before written.
+        mainScanState = MainScanCaptureFlow.withOwnedUri(
+            MainScanCaptureFlow.withOwnedUri(mainScanState, croppedUri),
+            enhancedUri
+        )
+
+        val outcome = MainScanCaptureProcessor.renderAuthoritative(
+            context = this,
+            sourceUri = pageUri,
+            editorQuad = cropState.quad,
+            rotationQuarterTurns = cropState.rotationQuarterTurns,
+            // The frame the polygon was confirmed against, not a re-derivation of it. The render
+            // reads EXIF independently, so this is the only value that can prove the frame it
+            // rebuilds is the frame the user was looking at.
+            editorFrameWidth = editorFrame.width,
+            editorFrameHeight = editorFrame.height,
+            croppedTarget = croppedTarget,
+            enhancedTarget = enhancedTarget,
+            filter = DocumentFilter.ENHANCE,
+            retainedBitmapBytes = retainedMainScanPreviewBytes()
+        )
+
+        when (outcome) {
+            is MainScanRenderOutcome.Authoritative -> {
+                // Step 3 — publish, THEN retire what it replaced.
+                mainScanAuthoritative = outcome.artifact
+                mainScanAuthoritativeFailure = null
+                previous?.let { sweepMainScanAuthoritativeFiles(it) }
+            }
+
+            is MainScanRenderOutcome.NonAuthoritative -> {
+                // Step 4 — the existing artifact, if any, survives untouched. Only the candidate's
+                // own paths are cleaned, and they are cleaned through the owned-file contract.
+                MainScanTrace.processingFailed(
+                    stage = "authoritative_${outcome.reason.name.lowercase()}"
+                )
+                mainScanAuthoritativeFailure = outcome.reason
+                sweepMainScanOwnedUris(setOf(croppedUri, enhancedUri))
+            }
+        }
+    }
+
+    /**
+     * The bytes the preview bitmaps hold and will NOT give back during an authoritative render — the
+     * review keeps showing them. Real `allocationByteCount` values, not an estimate from dimensions,
+     * so the reserve reflects what is actually committed.
+     */
+    private fun retainedMainScanPreviewBytes(): Long {
+        val retained = listOfNotNull(
+            mainScanWorkingImage?.bitmap,
+            mainScanCroppedImage,
+            mainScanEnhancedImage
+        )
+        return retained.sumOf { bitmap ->
+            runCatching { bitmap.allocationByteCount.toLong() }.getOrDefault(0L)
+        }
+    }
+
+    /**
+     * Back from the enhancement review returns to crop editing without losing the polygon.
+     *
+     * Authority is dropped FIRST and synchronously. The artifact was made from the polygon the user
+     * is about to change, so from the instant Back is pressed it describes a crop that is no longer
+     * confirmed — and a suspension point before the clear would leave a window in which a stale
+     * high-resolution page was still the thing a Confirm would write. The files it referenced are
+     * only swept afterwards, through the owned-file contract.
+     */
     internal fun backFromMainScanReview() {
         if (mainScanStage != MainScanStage.EnhancementReview) return
+        val stale = mainScanAuthoritative
+        mainScanAuthoritative = null
+        mainScanAuthoritativeFailure = null
         releaseMainScanDerivedImages()
         mainScanStage = MainScanStage.CropEditing
+        stale?.let { sweepMainScanAuthoritativeFiles(it) }
+    }
+
+    /** Deletes a retired artifact's two siblings off the main thread, via the owned-file guard. */
+    private fun sweepMainScanAuthoritativeFiles(artifact: MainScanAuthoritativeArtifact) {
+        sweepMainScanOwnedUris(setOf(artifact.croppedUri, artifact.enhancedUri))
+    }
+
+    /**
+     * Deletes [uris] off the main thread through the same two-barrier guard every other Main Scanner
+     * delete uses. The entries stay in the visit ledger: a second delete of a path already gone is a
+     * no-op, and dropping them would be the one way a file could end up referenced by nothing.
+     */
+    private fun sweepMainScanOwnedUris(uris: Set<String>) {
+        if (uris.isEmpty()) return
+        val filesDirPath = filesDir.absolutePath
+        lifecycleScope.launch {
+            withContext(Dispatchers.IO) {
+                uris.forEach { uriString -> deleteMainScanFileBlocking(uriString, filesDirPath) }
+            }
+        }
     }
 
     /** Releases the derived bitmaps. The captured original and its working copy are kept. */
@@ -1686,6 +1877,12 @@ class MainActivity : FragmentActivity() {
         mainScanCroppedImage = null
         mainScanWorkingImage = null
         mainScanCropState = null
+        // Authority dies with the visit, and it dies HERE — synchronously, before either caller
+        // reaches its file sweep. The artifact's two siblings are in the visit ledger, so the sweep
+        // that both callers already run reclaims them; this teardown stays free of I/O so it cannot
+        // race the ledger it does not own.
+        mainScanAuthoritative = null
+        mainScanAuthoritativeFailure = null
         mainScanStage = MainScanStage.CameraReady
     }
 

@@ -155,9 +155,15 @@ internal fun DocScannerApp(host: MainActivity) {
                                     ?: host.mainScanWorkingImage?.bitmap,
                                 label = "Enhancing image…"
                             )
+                            // The two bitmaps are previews; the third argument is the only thing
+                            // that says whether a saveable, source-resolution page exists behind
+                            // them. Passing the artifact's presence rather than a bitmap is what
+                            // keeps a preview from ever standing in for one.
                             MainScanStage.EnhancementReview -> MainScanEnhancementReviewScreen(
                                 enhanced = host.mainScanEnhancedImage,
                                 cropped = host.mainScanCroppedImage,
+                                highQualityResultAvailable = host.mainScanAuthoritative != null,
+                                highQualityFailure = host.mainScanAuthoritativeFailure,
                                 onBack = host::backFromMainScanReview
                             )
                             // The capture could not be decoded, so there is no image and no polygon.

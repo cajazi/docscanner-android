@@ -28,9 +28,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import com.dev.docscannerpdf.domain.mainscan.MainScanRenderFailure
 import com.dev.docscannerpdf.ui.idcard.DarkSystemBarsEffect
 
 private val ProcessingChrome = Color(0xFF101114)
@@ -195,11 +199,27 @@ fun MainScanFailureScreen(
  * green confirm action belong to the persistence pass, and rendering them here as controls that do
  * not save would be exactly the fake-success the brief forbids. Back returns to crop editing with
  * the polygon intact.
+ *
+ * ## The image shown is NOT the image that would be saved
+ *
+ * [enhanced] and [cropped] are previews, rendered from a bitmap downsampled to fit an interactive
+ * surface. The saveable page is the separate source-resolution artifact, and
+ * [highQualityResultAvailable] reports whether that artifact actually exists.
+ *
+ * The two can disagree, and when they do this surface says so. A preview renders identically whether
+ * the full-resolution render succeeded or refused — so a review that stayed silent would show a
+ * perfect page while nothing saveable existed behind it. That is the one lie this screen must not
+ * tell: the preview is never a fallback the user could keep.
+ *
+ * [highQualityFailure] refines the message where the reason is something the user can act on, and is
+ * ignored entirely when a result does exist.
  */
 @Composable
 fun MainScanEnhancementReviewScreen(
     enhanced: Bitmap?,
     cropped: Bitmap?,
+    highQualityResultAvailable: Boolean,
+    highQualityFailure: MainScanRenderFailure?,
     onBack: () -> Unit
 ) {
     DarkSystemBarsEffect()
@@ -207,6 +227,57 @@ fun MainScanEnhancementReviewScreen(
     // shown rather than nothing, and the caption says which one this is.
     val displayed = enhanced ?: cropped
     val enhancementApplied = enhanced != null
+
+    // Computed once and used for BOTH the caption and the accessibility state, so what a sighted
+    // user reads and what a screen reader announces cannot drift apart.
+    //
+    // No artifact exists, so there is nothing a later Confirm could write. Said plainly, and said
+    // even though the page above looks entirely correct. Running out of memory is the one reason the
+    // user can do something about, so it gets the advice; every other reason gets the same honest
+    // statement without a suggestion that would not help.
+    val statusMessage = when {
+        !highQualityResultAvailable &&
+            highQualityFailure == MainScanRenderFailure.INSUFFICIENT_MEMORY ->
+            "Preview only — there wasn't enough memory to produce the full-quality " +
+                "page, so this can't be saved. Close other apps and try again."
+
+        !highQualityResultAvailable ->
+            "Preview only — the high-quality page couldn't be produced, " +
+                "so this can't be saved. Go back and try the crop again."
+
+        enhancementApplied ->
+            "Cropped and enhanced at full quality. Saving arrives in the next step."
+
+        // The artifact is always enhanced when it exists — the render fails closed rather than
+        // publishing an unenhanced one — so only the PREVIEW is missing its enhancement here, and
+        // the caption says exactly that rather than describing the saveable page as something it
+        // is not.
+        else ->
+            "Cropped and enhanced at full quality. The preview above shows the " +
+                "unenhanced crop."
+    }
+
+    // What the image IS, for a user who cannot see it. "Enhanced page" was a lie in three of these
+    // four states: this surface can be showing an unenhanced crop, and it can be showing a preview
+    // that no saveable page stands behind. A screen reader must not be told the page is finished
+    // when the only thing that exists is the picture of it.
+    val imageDescription = when {
+        !highQualityResultAvailable && enhancementApplied ->
+            "Preview of the enhanced page. Preview only — this cannot be saved."
+
+        !highQualityResultAvailable ->
+            "Preview of the cropped page, shown without enhancement. " +
+                "Preview only — this cannot be saved."
+
+        // Even here the IMAGE is a preview — the artifact is a separate, larger file. Saying so
+        // costs one clause and keeps the description true of the thing actually on screen.
+        enhancementApplied ->
+            "Preview of the cropped and enhanced page. The full-quality page is ready."
+
+        else ->
+            "Preview of the cropped page, shown without enhancement. " +
+                "The full-quality enhanced page is ready."
+    }
 
     Box(
         modifier = Modifier
@@ -247,19 +318,28 @@ fun MainScanEnhancementReviewScreen(
                     val bitmap = remember(displayed) { displayed.asImageBitmap() }
                     Image(
                         bitmap = bitmap,
-                        contentDescription = "Enhanced page",
+                        // Set through `semantics` rather than the parameter so the STATE travels
+                        // with the image too: whether a saveable page exists is not a property of
+                        // the picture, and a screen reader that reached the image without reading
+                        // the caption below would otherwise never hear it.
+                        contentDescription = null,
                         contentScale = ContentScale.Fit,
-                        modifier = Modifier.fillMaxSize()
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .semantics {
+                                contentDescription = imageDescription
+                                stateDescription = if (highQualityResultAvailable) {
+                                    "Full-quality page ready"
+                                } else {
+                                    "Preview only, not saveable"
+                                }
+                            }
                     )
                 }
             }
 
             Text(
-                text = if (enhancementApplied) {
-                    "Cropped and enhanced. Saving arrives in the next step."
-                } else {
-                    "Cropped. Enhancement was unavailable for this page."
-                },
+                text = statusMessage,
                 color = Color.White,
                 style = MaterialTheme.typography.bodySmall,
                 textAlign = TextAlign.Center,
