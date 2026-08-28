@@ -22,16 +22,35 @@ data class WarpPlan(
 object PerspectiveTransformEngine {
 
     /**
-     * Plans the warp for [normalizedQuad] over a [sourceWidth] x [sourceHeight] image. The quad
-     * is normalized (clamped + reordered) first so inverted corner input is auto-corrected.
+     * Plans the warp for [normalizedQuad] over a [sourceWidth] x [sourceHeight] image. The quad is
+     * clamped into the image and its corners reordered, so inverted corner input is auto-corrected.
+     *
+     * The reorder happens AFTER the conversion to source pixels, and that ordering is what decides
+     * which corner becomes the output's top-left. Deciding it in normalized coordinates — as this
+     * did previously, through [PerspectiveGeometry.normalize] — makes the answer depend on the
+     * source's aspect ratio: x carries the width scale and y the height scale, so the anchor rule's
+     * `x + y` comparison is taken in a stretched space. A portrait page tilted 40 degrees in a
+     * 3060x4080 capture came out quarter-turned from the polygon the user had confirmed, with its
+     * output dimensions transposed, while the identical physical page in a square image did not.
+     * Source pixels are isotropic, so the same physical quad now yields the same physical anchor at
+     * every aspect ratio.
+     *
+     * [PerspectiveGeometry.orderCorners] itself is unchanged and is still handed all four points: it
+     * remains a total function over arbitrary corner order, which
+     * [com.dev.docscannerpdf.domain.detection.DocumentEdgeDetector] relies on to partition the four
+     * points its independent extremum scans produce.
      */
     fun plan(
         normalizedQuad: PerspectiveQuad,
         sourceWidth: Int,
         sourceHeight: Int
     ): WarpPlan {
-        val quad = PerspectiveGeometry.normalize(normalizedQuad)
-        val src = quad.corners().map { CropPoint(it.x * sourceWidth, it.y * sourceHeight) }
+        // Clamping stays a normalized-space operation — the unit square is what "inside the image"
+        // means, and it is independent of the pixel dimensions.
+        val clamped = PerspectiveGeometry.clampToUnit(normalizedQuad)
+        val src = PerspectiveGeometry.orderCorners(
+            clamped.corners().map { CropPoint(it.x * sourceWidth, it.y * sourceHeight) }
+        ).corners()
 
         val widthTop = distance(src[0], src[1])
         val widthBottom = distance(src[3], src[2])
