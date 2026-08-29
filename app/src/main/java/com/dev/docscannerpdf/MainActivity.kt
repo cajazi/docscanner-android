@@ -154,6 +154,7 @@ import com.dev.docscannerpdf.domain.mainscan.MainScanCaptureTicket
 import com.dev.docscannerpdf.domain.mainscan.MainScanFileOwnership
 import com.dev.docscannerpdf.domain.mainscan.MainScanPageSource
 import com.dev.docscannerpdf.domain.mainscan.MainScanTrace
+import com.dev.docscannerpdf.domain.mainscan.MainScanVisitStore
 import com.dev.docscannerpdf.ui.crop.CropImageProcessor
 import com.dev.docscannerpdf.ui.mainscan.MainScanCaptureImageLoader
 import com.dev.docscannerpdf.ui.mainscan.MainScanCaptureProcessor
@@ -1335,21 +1336,58 @@ class MainActivity : FragmentActivity() {
     internal val mainScanCaptureDirectory: File
         get() = File(filesDir, MainScanAuthoritativeRender.CAPTURE_DIRECTORY_NAME)
 
-    /** Whether the app-owned Main Scanner camera is showing. */
-    internal var showMainScanCapture by mutableStateOf(false)
+    /**
+     * The RETAINED owner of the current Main Scanner visit.
+     *
+     * Activity-scoped, so a recreation inside this process — configuration change, theme or locale
+     * switch, the return from an app-lock unlock, a foldable size change — hands back the same
+     * instance. Every Main Scanner field below is a view onto it rather than its own
+     * `mutableStateOf`, which is what stops a recreation from silently opening a brand-new visit
+     * while the previous visit's capture is still on disk and no longer referenced by any ledger.
+     *
+     * The store holds no Context and performs no I/O. Ownership, containment and every delete stay
+     * here, on the activity that has `filesDir`.
+     *
+     * This survives recreation, NOT process death — see [MainScanVisitStore].
+     */
+    private val mainScanVisit: MainScanVisitStore by viewModels()
+
+    /** Whether the app-owned Main Scanner camera is showing. Retained with the visit. */
+    internal var showMainScanCapture: Boolean
+        get() = mainScanVisit.captureSurfaceVisible
+        set(value) {
+            mainScanVisit.captureSurfaceVisible = value
+        }
 
     /**
      * Pure session state for the current Main Scanner visit: capture stage, generation token,
      * pending page, owned-file ledger and discard-dialog visibility. Every transition goes through
      * [MainScanCaptureFlow] so the capture contract is unit-testable without a device.
+     *
+     * Retained AS ONE VALUE on [mainScanVisit]. Reconstructing a pending page without the ledger it
+     * came with would leave every file this visit wrote unnameable by any sweep, so the state is
+     * never split across the lifecycle boundary — the ledger crosses it with the page or not at all.
      */
-    internal var mainScanState by mutableStateOf(MainScanCaptureState())
+    internal var mainScanState: MainScanCaptureState
+        get() = mainScanVisit.captureState
+        set(value) {
+            mainScanVisit.captureState = value
+        }
 
     /** Opens the app-owned Main Scanner camera on a brand-new visit id. */
     internal fun startMainScanCapture() {
         // A new visit must not inherit a previous visit's ledger, generation or pending page, and
         // its NEW sessionId invalidates every capture still in flight from the previous one.
         val previous = mainScanState
+        // Nor may it inherit the previous visit's STAGE. That used to be free: the stage was an
+        // activity-local field that a recreation reset for us. It is retained now, so the reset has
+        // to be explicit — and it is not cosmetic. Crop preparation is admitted only from the
+        // pre-pipeline stages, so a visit that opened while a stale `EnhancementReview` (or a stale
+        // `Failed`) was still held would have its brand-new capture refused preparation forever:
+        // a page on screen that no decode would ever run for. Tearing down here makes "a new visit
+        // begins at CameraReady, holding none of the last one's pixels" true by construction rather
+        // than by every exit path remembering to leave it that way.
+        clearMainScanPipeline()
         sweepMainScanSession(previousState = previous, retainUris = emptySet())
         mainScanState = MainScanCaptureFlow.beginVisit(previous)
         showMainScanCapture = true
@@ -1474,7 +1512,10 @@ class MainActivity : FragmentActivity() {
             )
             val appOwned = MainScanFileOwnership.isOwnedFileUri(uri.toString(), filesDir.absolutePath)
             MainScanTrace.staleOutputDeleted(appOwned = appOwned)
-            lifecycleScope.launch { deleteMainScanOwnedFile(uri.toString()) }
+            // Retained scope: a rejected capture's file is referenced by NO ledger, so a recreation
+            // cancelling this delete strands it until the next scanner-open orphan sweep. The
+            // two-barrier guard is unchanged — only the lifetime the delete is bounded by.
+            mainScanVisit.processingScope.launch { deleteMainScanOwnedFile(uri.toString()) }
             return
         }
         MainScanTrace.ticketAccepted(ticket.sessionId, ticket.generation)
@@ -1537,18 +1578,44 @@ class MainActivity : FragmentActivity() {
     // until an explicit Confirm arrives in a later pass. Bitmaps live in memory for the visit and
     // are released on discard; the captured JPEG on disk is never modified by any stage.
 
+    // Each field below is a view onto the retained visit, not activity-local state. The pipeline
+    // reads and writes them exactly as before; what changed is that a recreation no longer resets
+    // them, so the stage, the polygon and the pixels the user is looking at all describe the same
+    // page after the activity comes back as they did before it went away.
+
     /** The stage the captured page is at. Drives which crop-surface content is composed. */
-    internal var mainScanStage by mutableStateOf(MainScanStage.CameraReady)
+    internal var mainScanStage: MainScanStage
+        get() = mainScanVisit.stage
+        set(value) {
+            mainScanVisit.stage = value
+        }
 
     /** The EXIF-upright working copy of the accepted capture. */
-    internal var mainScanWorkingImage by mutableStateOf<MainScanWorkingImage?>(null)
+    internal var mainScanWorkingImage: MainScanWorkingImage?
+        get() = mainScanVisit.workingImage
+        set(value) {
+            mainScanVisit.workingImage = value
+        }
 
     /** Polygon editing state. Null until the working image and initial polygon are resolved. */
-    internal var mainScanCropState by mutableStateOf<MainScanCropState?>(null)
+    internal var mainScanCropState: MainScanCropState?
+        get() = mainScanVisit.cropState
+        set(value) {
+            mainScanVisit.cropState = value
+        }
 
     /** The perspective-corrected page, and the enhanced render of it. */
-    internal var mainScanCroppedImage by mutableStateOf<Bitmap?>(null)
-    internal var mainScanEnhancedImage by mutableStateOf<Bitmap?>(null)
+    internal var mainScanCroppedImage: Bitmap?
+        get() = mainScanVisit.croppedImage
+        set(value) {
+            mainScanVisit.croppedImage = value
+        }
+
+    internal var mainScanEnhancedImage: Bitmap?
+        get() = mainScanVisit.enhancedImage
+        set(value) {
+            mainScanVisit.enhancedImage = value
+        }
 
     /**
      * The ONLY persistable result of this pipeline: the source-resolution post-crop artifact.
@@ -1564,16 +1631,39 @@ class MainActivity : FragmentActivity() {
      * a first render fails, and cleared SYNCHRONOUSLY the moment the polygon it was made from stops
      * being the confirmed one.
      */
-    internal var mainScanAuthoritative by mutableStateOf<MainScanAuthoritativeArtifact?>(null)
+    internal var mainScanAuthoritative: MainScanAuthoritativeArtifact?
+        get() = mainScanVisit.authoritative
+        set(value) {
+            mainScanVisit.authoritative = value
+        }
 
     /**
      * Why the last authoritative render produced nothing, or null when it succeeded or has not run.
      * Held so the review can say something true about the high-quality result instead of implying
      * the preview it is showing is one.
      */
-    internal var mainScanAuthoritativeFailure by mutableStateOf<MainScanRenderFailure?>(null)
+    internal var mainScanAuthoritativeFailure: MainScanRenderFailure?
+        get() = mainScanVisit.authoritativeFailure
+        set(value) {
+            mainScanVisit.authoritativeFailure = value
+        }
 
-    private var mainScanProcessingJob: Job? = null
+    /**
+     * The job advancing the current stage, owned by the RETAINED visit rather than by this activity.
+     *
+     * On `lifecycleScope` a recreation cancelled it mid-crop or mid-enhance while the stage it was
+     * advancing survived nowhere, so the two could not disagree. Now the stage survives — and a
+     * retained `Cropping` with a cancelled coroutine behind it would be a progress overlay that
+     * never resolves. The job crosses the boundary with the stage it belongs to.
+     *
+     * The existing single-flight discipline is unchanged: every start still cancels its predecessor,
+     * and [clearMainScanPipeline] still cancels whatever is running when the visit ends.
+     */
+    private var mainScanProcessingJob: Job?
+        get() = mainScanVisit.processingJob
+        set(value) {
+            mainScanVisit.processingJob = value
+        }
 
     /** App-private directory for the authoritative cropped sibling. */
     internal val mainScanCroppedDirectory: File
@@ -1589,10 +1679,26 @@ class MainActivity : FragmentActivity() {
      * priority. The surface shows the retained capture throughout — never a blank frame.
      */
     internal fun prepareMainScanCrop(pageUri: Uri, seed: MainScanCropSeed?) {
+        // The crop surface asks for this from a Compose effect keyed on the pending page, and a
+        // REMOUNT replays that effect with the same page: an Activity recreation, an app-lock
+        // unlock, any re-entry of the composition. The visit is retained now, so a replay would be
+        // asking to redo work that has already been done — cancelling the live pipeline, forcing the
+        // stage back to CropPreparing, and re-resolving the polygon over the corners the user had
+        // dragged. The guard is the FIRST thing here, before the stage write and before the cancel,
+        // because both of those are the damage.
+        if (!MainScanWorkflow.allowsCropPreparation(mainScanStage)) {
+            if (BuildConfig.DEBUG) {
+                Log.d(MAIN_SCAN_TAG, "MAIN_SCAN_PREPARE refused stage=$mainScanStage reason=remount")
+            }
+            return
+        }
         mainScanStage = MainScanStage.CropPreparing
         mainScanProcessingJob?.cancel()
-        mainScanProcessingJob = lifecycleScope.launch {
-            val working = MainScanCaptureImageLoader.load(this@MainActivity, pageUri)
+        mainScanProcessingJob = mainScanVisit.processingScope.launch {
+            // The application context, not this activity: the job outlives a recreation now, and
+            // holding the destroyed instance across it would leak the whole view hierarchy. Nothing
+            // the loader does is activity-scoped.
+            val working = MainScanCaptureImageLoader.load(applicationContext, pageUri)
             if (working == null) {
                 MainScanTrace.processingFailed(stage = "decode")
                 mainScanStage = MainScanStage.Failed
@@ -1644,7 +1750,7 @@ class MainActivity : FragmentActivity() {
         val working = mainScanWorkingImage ?: return
         val state = mainScanCropState ?: return
         mainScanProcessingJob?.cancel()
-        mainScanProcessingJob = lifecycleScope.launch {
+        mainScanProcessingJob = mainScanVisit.processingScope.launch {
             val rotated = MainScanCaptureProcessor.rotate(
                 bitmap = working.bitmap,
                 clockwise = direction == MainScanRotation.RIGHT
@@ -1686,7 +1792,7 @@ class MainActivity : FragmentActivity() {
         }
         mainScanStage = MainScanStage.Cropping
         mainScanProcessingJob?.cancel()
-        mainScanProcessingJob = lifecycleScope.launch {
+        mainScanProcessingJob = mainScanVisit.processingScope.launch {
             val cropped = MainScanCaptureProcessor.perspectiveCrop(working.bitmap, state.quad)
             if (cropped == null) {
                 MainScanTrace.processingFailed(stage = "perspective_crop")
@@ -1763,7 +1869,10 @@ class MainActivity : FragmentActivity() {
         )
 
         val outcome = MainScanCaptureProcessor.renderAuthoritative(
-            context = this,
+            // Application context: this runs inside the retained processing job, which may still be
+            // advancing after the activity that started it was recreated. Nothing it reads is
+            // activity-scoped, and `filesDir` resolves identically.
+            context = applicationContext,
             sourceUri = pageUri,
             editorQuad = cropState.quad,
             rotationQuarterTurns = cropState.rotationQuarterTurns,
@@ -1846,7 +1955,13 @@ class MainActivity : FragmentActivity() {
     private fun sweepMainScanOwnedUris(uris: Set<String>) {
         if (uris.isEmpty()) return
         val filesDirPath = filesDir.absolutePath
-        lifecycleScope.launch {
+        // The RETAINED scope, because the callers are retained: this is reached from inside the
+        // processing job, which now outlives the activity that started it. Bound to the activity's
+        // own scope, a recreation landing between the render and its cleanup cancelled the delete, and
+        // the superseded artifact's two full-resolution siblings stayed on disk. The delete itself
+        // does not move — it still goes through this activity's two-barrier guard below, with the
+        // private-directory path resolved on the main thread before the launch.
+        mainScanVisit.processingScope.launch {
             withContext(Dispatchers.IO) {
                 uris.forEach { uriString -> deleteMainScanFileBlocking(uriString, filesDirPath) }
             }
@@ -1940,7 +2055,11 @@ class MainActivity : FragmentActivity() {
         val orphans = MainScanFileOwnership.visitOrphans(previousState, retainUris)
         if (orphans.isEmpty()) return
         val filesDirPath = filesDir.absolutePath
-        lifecycleScope.launch {
+        // Retained for the same reason, and one more: this runs at the exact moment the ledger
+        // naming these files is being replaced by a new visit's. A recreation cancelling it would
+        // strand files that nothing in memory could name again, which is precisely the leak this
+        // slice exists to close. Ownership and the guard stay here; only the scope is durable.
+        mainScanVisit.processingScope.launch {
             withContext(Dispatchers.IO) {
                 orphans.forEach { uriString -> deleteMainScanFileBlocking(uriString, filesDirPath) }
             }

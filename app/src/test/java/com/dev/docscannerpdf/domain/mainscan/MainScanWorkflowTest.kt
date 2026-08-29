@@ -190,6 +190,127 @@ class MainScanWorkflowTest {
         )
     }
 
+    // --- crop preparation is a first preparation, never a repeat of one -----------------------------
+    //
+    // The crop surface asks for preparation from a Compose effect keyed on the pending page, and a
+    // REMOUNT replays that effect with the same page — an Activity recreation, an app-lock unlock,
+    // any re-entry of the composition. Now that the visit survives those, replaying preparation
+    // would cancel the live pipeline, force the stage back to CropPreparing and re-resolve the
+    // polygon over corners the user had already dragged. These tests pin exactly which stages may
+    // still be prepared from.
+
+    /** The complete admitted set, spelled out rather than derived, so widening it is a diff. */
+    private val cropPreparationStages = setOf(
+        MainScanStage.CameraReady,
+        MainScanStage.Capturing,
+        MainScanStage.CaptureAccepted
+    )
+
+    @Test
+    fun cropPreparationIsDecidedForEveryStageAndAdmittedOnlyBeforeThePipelineStarts() {
+        for (stage in MainScanStage.entries) {
+            assertEquals(
+                "crop preparation gate for $stage",
+                stage in cropPreparationStages,
+                MainScanWorkflow.allowsCropPreparation(stage)
+            )
+        }
+    }
+
+    @Test
+    fun theLegitimateFirstPreparationIsStillAdmitted() {
+        // The real entry point: a visit sits at CameraReady until preparation moves it on, so
+        // refusing here would leave a captured page permanently undecoded.
+        assertTrue(
+            "the first preparation of a captured page must run",
+            MainScanWorkflow.allowsCropPreparation(MainScanStage.CameraReady)
+        )
+        assertTrue(
+            "an accepted capture has produced nothing yet, so preparing it destroys nothing",
+            MainScanWorkflow.allowsCropPreparation(MainScanStage.CaptureAccepted)
+        )
+        assertTrue(
+            "nor has a capture still in flight",
+            MainScanWorkflow.allowsCropPreparation(MainScanStage.Capturing)
+        )
+    }
+
+    @Test
+    fun aRemountDuringCropEditingMayNotRePrepare() {
+        // The polygon the user has been dragging exists only in memory. Re-preparing resolves a
+        // fresh one from the frozen seed, so a rotation mid-edit would silently undo their work.
+        assertFalse(
+            "CropEditing must refuse preparation — the edited polygon would be overwritten",
+            MainScanWorkflow.allowsCropPreparation(MainScanStage.CropEditing)
+        )
+        assertTrue(
+            "precondition: this is the stage the polygon is actually editable in",
+            MainScanWorkflow.allowsPolygonEditing(MainScanStage.CropEditing)
+        )
+    }
+
+    @Test
+    fun aRemountDuringEnhancementReviewMayNotRegressToPreparation() {
+        // The worst case: returning from an app-lock unlock at review. Re-preparing would regress a
+        // reviewed page to CropPreparing, release the derived previews, and strand the authoritative
+        // artifact against a polygon that had been reset out from under it.
+        assertFalse(
+            "EnhancementReview must refuse preparation",
+            MainScanWorkflow.allowsCropPreparation(MainScanStage.EnhancementReview)
+        )
+        assertTrue(
+            "precondition: review is a stage with real derived pixels on screen",
+            MainScanWorkflow.requiresVisibleImage(MainScanStage.EnhancementReview)
+        )
+    }
+
+    @Test
+    fun everyProcessingStageRefusesPreparationSoNoLivePipelineIsRestarted() {
+        for (stage in listOf(
+            MainScanStage.CropPreparing,
+            MainScanStage.Cropping,
+            MainScanStage.EnhancementPreparing,
+            MainScanStage.Confirming,
+            MainScanStage.Persisting
+        )) {
+            assertFalse(
+                "$stage has a job advancing it; preparation would cancel and restart it",
+                MainScanWorkflow.allowsCropPreparation(stage)
+            )
+        }
+    }
+
+    @Test
+    fun terminalAndErrorStagesRefusePreparation() {
+        // Completed and Discarded have no visit left to prepare. Failed has one, but its recovery is
+        // an explicit user action — a remount silently retrying a decode that already failed would
+        // loop the failure surface rather than resolve it.
+        for (stage in listOf(
+            MainScanStage.Completed,
+            MainScanStage.Discarded,
+            MainScanStage.Failed
+        )) {
+            assertFalse(
+                "$stage must refuse preparation",
+                MainScanWorkflow.allowsCropPreparation(stage)
+            )
+        }
+    }
+
+    @Test
+    fun preparationIsRefusedFromEveryStageThatRequiresARetainedImage() {
+        // Structural rather than enumerated: if a stage promises the user pixels are on screen, the
+        // work that produced those pixels has already happened, so preparation cannot be a first one.
+        for (stage in MainScanStage.entries) {
+            if (MainScanWorkflow.requiresVisibleImage(stage)) {
+                assertFalse(
+                    "$stage keeps an image on screen, so preparation would discard live state",
+                    MainScanWorkflow.allowsCropPreparation(stage)
+                )
+            }
+        }
+    }
+
     // --- back behaviour -------------------------------------------------------------------------------
 
     @Test

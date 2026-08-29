@@ -111,6 +111,40 @@ object MainScanWorkflow {
     fun allowsPolygonEditing(stage: MainScanStage): Boolean = stage == MainScanStage.CropEditing
 
     /**
+     * Stages from which crop preparation is a FIRST preparation rather than a repeat of one.
+     *
+     * Everything here is pre-pipeline: no working image has been decoded, no polygon resolved, no
+     * derived preview or authoritative artifact exists, so re-running preparation from one of them
+     * destroys nothing.
+     */
+    private val CROP_PREPARATION_STAGES = setOf(
+        MainScanStage.CameraReady,
+        MainScanStage.Capturing,
+        MainScanStage.CaptureAccepted
+    )
+
+    /**
+     * Whether crop preparation may run for a visit currently at [stage].
+     *
+     * Preparation is destructive by nature: it cancels the in-flight processing job, forces the
+     * stage back to [MainScanStage.CropPreparing] and re-resolves the polygon from the seed. That is
+     * exactly right the first time and catastrophic every time after, because the surface that asks
+     * for it is a Compose effect keyed on the pending page — and a remount (Activity recreation, an
+     * app-lock unlock, a composition re-entry) replays that effect with the SAME page.
+     *
+     * With the visit retained, replaying it would take a user who was editing their polygon, or
+     * reviewing a rendered page, back to a decode they had already finished — discarding the edited
+     * corners, releasing the derived previews and stranding the authoritative artifact against a
+     * polygon that no longer matches it. So preparation is admitted only from the stages in
+     * [CROP_PREPARATION_STAGES], where there is nothing yet to lose, and refused from every stage at
+     * or past [MainScanStage.CropPreparing] — the working stages, the terminal ones, and
+     * [MainScanStage.Failed], whose recovery is an explicit user action rather than a remount.
+     *
+     * A refusal is not an error: it means the visit already has what preparation would have produced.
+     */
+    fun allowsCropPreparation(stage: MainScanStage): Boolean = stage in CROP_PREPARATION_STAGES
+
+    /**
      * Whether the crop may be advanced. Only from [MainScanStage.CropEditing], and only with a valid
      * polygon — the reference's Next is disabled on invalid geometry rather than failing later.
      */
