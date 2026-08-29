@@ -1,19 +1,141 @@
 <?xml version="1.0" encoding="utf-8"?><!--
-   Sample data extraction rules file; uncomment and customize as necessary.
-   See https://developer.android.com/about/versions/12/backup-restore#xml-changes
-   for details.
+    Android 12+ (API 31+) data extraction policy (android:dataExtractionRules).
+
+    Two independent transports leave the device and each needs its own ruleset: Auto
+    Backup to the cloud (<cloud-backup>) and device-to-device transfer (<device-transfer>).
+    A rule declared in one does NOT apply to the other, and a section left empty backs up
+    everything - so the exclusion set below is deliberately identical in both. Android
+    imposes no difference in what these transports may carry for this app, so there is no
+    justification for divergent treatment: a scan withheld from the cloud but copied to a
+    new device is still disclosed.
+
+    This file must stay in lockstep with backup_rules.xml, which covers devices below
+    API 31. Both are asserted together by BackupExclusionPolicyTest.
+
+    Only <exclude> is used in each section: an <include> would flip that section to an
+    allowlist and silently drop unrelated app data from backup.
+
+    The cache domain needs no rules: Android never extracts getCacheDir(), which is where
+    compressed_pdfs, text_exports and document_shares live.
 -->
 <data-extraction-rules>
+
     <cloud-backup>
-        <!-- TODO: Use <include> and <exclude> to control what is backed up.
-        <include .../>
-        <exclude .../>
+
+        <!--
+            File domain root. Every production write under getFilesDir() is scanner
+            capture, scanner derivative, imported source image, per-document annotation,
+            or a document export rendered from a scan - the directories named below cover
+            the domain exhaustively. Excluding the root keeps a scanner directory added
+            in future private by default rather than extraction-eligible.
         -->
+        <exclude domain="file" path="." />
+
+        <!-- Main scanner: raw capture and authoritative post-crop artifacts.
+             MainScanAuthoritativeRender.CAPTURE_DIRECTORY_NAME / CROPPED_DIRECTORY_NAME /
+             ENHANCED_DIRECTORY_NAME, resolved in MainActivity.kt. -->
+        <exclude domain="file" path="main_scan_capture" />
+        <exclude domain="file" path="main_scan_cropped" />
+        <exclude domain="file" path="main_scan_enhanced" />
+
+        <!-- ID-card scanner: guided capture and every derived stage. -->
+        <exclude domain="file" path="id_card_guided_capture" />
+        <exclude domain="file" path="id_card_filtered" />
+        <exclude domain="file" path="id_card_combined" />
+        <exclude domain="file" path="id_scan_preview" />
+        <exclude domain="file" path="id_scan_preview_back" />
+        <exclude domain="file" path="id_scan_enhanced" />
+        <exclude domain="file" path="id_scan_rotated" />
+
+        <!-- Passport scanner: guided capture and every derived stage. -->
+        <exclude domain="file" path="passport_guided_capture" />
+        <exclude domain="file" path="passport_cropped" />
+        <exclude domain="file" path="passport_filtered" />
+        <exclude domain="file" path="passport_rotated" />
+        <exclude domain="file" path="passport_watermarked" />
+
+        <!-- Other scanner-derived image content and user markup over scanned pages. -->
+        <exclude domain="file" path="cropped_images" />
+        <exclude domain="file" path="imported_images" />
+        <exclude domain="file" path="annotations" />
+
+        <!-- Document artifacts rendered from scans; searchable_pdfs carries the OCR text
+             layer, word_exports and pdf_images carry the page content verbatim. -->
+        <exclude domain="file" path="searchable_pdfs" />
+        <exclude domain="file" path="generated_pdfs" />
+        <exclude domain="file" path="edited_pdfs" />
+        <exclude domain="file" path="split_pdfs" />
+        <exclude domain="file" path="merged_pdfs" />
+        <exclude domain="file" path="locked_pdfs" />
+        <exclude domain="file" path="signed_pdfs" />
+        <exclude domain="file" path="watermarked_pdfs" />
+        <exclude domain="file" path="word_exports" />
+        <exclude domain="file" path="pdf_images" />
+        <exclude domain="file" path="exports" />
+
+        <!-- Document database and its SQLite sidecars; see backup_rules.xml for the
+             journal-mode reasoning. Database excludes match one file, not a prefix. -->
+        <exclude domain="database" path="docscanner_pdf.db" />
+        <exclude domain="database" path="docscanner_pdf.db-wal" />
+        <exclude domain="database" path="docscanner_pdf.db-shm" />
+        <exclude domain="database" path="docscanner_pdf.db-journal" />
+
     </cloud-backup>
-    <!--
+
     <device-transfer>
-        <include .../>
-        <exclude .../>
+
+        <!--
+            Identical to <cloud-backup> above. Device-to-device transfer is a separate
+            transport with a separate ruleset; anything omitted here is copied to the new
+            device even though the cloud rules withhold it.
+        -->
+        <exclude domain="file" path="." />
+
+        <!-- Main scanner: raw capture and authoritative post-crop artifacts. -->
+        <exclude domain="file" path="main_scan_capture" />
+        <exclude domain="file" path="main_scan_cropped" />
+        <exclude domain="file" path="main_scan_enhanced" />
+
+        <!-- ID-card scanner: guided capture and every derived stage. -->
+        <exclude domain="file" path="id_card_guided_capture" />
+        <exclude domain="file" path="id_card_filtered" />
+        <exclude domain="file" path="id_card_combined" />
+        <exclude domain="file" path="id_scan_preview" />
+        <exclude domain="file" path="id_scan_preview_back" />
+        <exclude domain="file" path="id_scan_enhanced" />
+        <exclude domain="file" path="id_scan_rotated" />
+
+        <!-- Passport scanner: guided capture and every derived stage. -->
+        <exclude domain="file" path="passport_guided_capture" />
+        <exclude domain="file" path="passport_cropped" />
+        <exclude domain="file" path="passport_filtered" />
+        <exclude domain="file" path="passport_rotated" />
+        <exclude domain="file" path="passport_watermarked" />
+
+        <!-- Other scanner-derived image content and user markup over scanned pages. -->
+        <exclude domain="file" path="cropped_images" />
+        <exclude domain="file" path="imported_images" />
+        <exclude domain="file" path="annotations" />
+
+        <!-- Document artifacts rendered from scans. -->
+        <exclude domain="file" path="searchable_pdfs" />
+        <exclude domain="file" path="generated_pdfs" />
+        <exclude domain="file" path="edited_pdfs" />
+        <exclude domain="file" path="split_pdfs" />
+        <exclude domain="file" path="merged_pdfs" />
+        <exclude domain="file" path="locked_pdfs" />
+        <exclude domain="file" path="signed_pdfs" />
+        <exclude domain="file" path="watermarked_pdfs" />
+        <exclude domain="file" path="word_exports" />
+        <exclude domain="file" path="pdf_images" />
+        <exclude domain="file" path="exports" />
+
+        <!-- Document database and its SQLite sidecars. -->
+        <exclude domain="database" path="docscanner_pdf.db" />
+        <exclude domain="database" path="docscanner_pdf.db-wal" />
+        <exclude domain="database" path="docscanner_pdf.db-shm" />
+        <exclude domain="database" path="docscanner_pdf.db-journal" />
+
     </device-transfer>
-    -->
+
 </data-extraction-rules>
