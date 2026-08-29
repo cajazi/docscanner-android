@@ -1,13 +1,95 @@
 <?xml version="1.0" encoding="utf-8"?><!--
-   Sample backup rules file; uncomment and customize as necessary.
-   See https://developer.android.com/guide/topics/data/autobackup
-   for details.
-   Note: This file is ignored for devices older than API 31
-   See https://developer.android.com/about/versions/12/backup-restore
+    Pre-Android-12 Auto Backup policy (android:fullBackupContent). Applies to devices
+    below API 31; API 31+ is governed by data_extraction_rules.xml, which MUST stay in
+    lockstep with this file.
+
+    Scanned documents are the most sensitive data this app holds: raw camera captures of
+    ID cards and passports, their cropped/enhanced derivatives, and the PDF/Word/OCR
+    artifacts rendered from them. None of it may leave the device through Auto Backup or
+    device-to-device transfer.
+
+    Only <exclude> is used. Declaring any <include> would flip the policy to an allowlist
+    and silently drop unrelated app data (shared preferences, external storage) from
+    backup, so unrelated backup behavior is preserved by omission.
+
+    The cache domain needs no rules: Android never backs up getCacheDir(), which is where
+    compressed_pdfs, text_exports and document_shares live.
 -->
 <full-backup-content>
+
     <!--
-   <include domain="sharedpref" path="."/>
-   <exclude domain="sharedpref" path="device.xml"/>
--->
+        File domain root. Every production write under getFilesDir() is scanner capture,
+        scanner derivative, imported source image, per-document annotation, or a document
+        export rendered from a scan - see the enumerated directories below, which cover
+        the domain exhaustively. There is no non-sensitive file-domain content to
+        preserve, so the root is excluded as a fail-safe: a scanner directory added in
+        future is private by default instead of backup-eligible until someone remembers
+        to amend this file.
+    -->
+    <exclude domain="file" path="." />
+
+    <!--
+        The known sensitive directories, named explicitly. Redundant against the root
+        exclusion above by design: each is an auditable, individually testable statement
+        of intent, and the two layers fail independently.
+    -->
+
+    <!-- Main scanner: raw capture and authoritative post-crop artifacts.
+         MainScanAuthoritativeRender.CAPTURE_DIRECTORY_NAME / CROPPED_DIRECTORY_NAME /
+         ENHANCED_DIRECTORY_NAME, resolved in MainActivity.kt. -->
+    <exclude domain="file" path="main_scan_capture" />
+    <exclude domain="file" path="main_scan_cropped" />
+    <exclude domain="file" path="main_scan_enhanced" />
+
+    <!-- ID-card scanner: guided capture and every derived stage. -->
+    <exclude domain="file" path="id_card_guided_capture" />
+    <exclude domain="file" path="id_card_filtered" />
+    <exclude domain="file" path="id_card_combined" />
+    <exclude domain="file" path="id_scan_preview" />
+    <exclude domain="file" path="id_scan_preview_back" />
+    <exclude domain="file" path="id_scan_enhanced" />
+    <exclude domain="file" path="id_scan_rotated" />
+
+    <!-- Passport scanner: guided capture and every derived stage. -->
+    <exclude domain="file" path="passport_guided_capture" />
+    <exclude domain="file" path="passport_cropped" />
+    <exclude domain="file" path="passport_filtered" />
+    <exclude domain="file" path="passport_rotated" />
+    <exclude domain="file" path="passport_watermarked" />
+
+    <!-- Other scanner-derived image content and user markup over scanned pages. -->
+    <exclude domain="file" path="cropped_images" />
+    <exclude domain="file" path="imported_images" />
+    <exclude domain="file" path="annotations" />
+
+    <!-- Document artifacts rendered from scans; searchable_pdfs carries the OCR text
+         layer, word_exports and pdf_images carry the page content verbatim. -->
+    <exclude domain="file" path="searchable_pdfs" />
+    <exclude domain="file" path="generated_pdfs" />
+    <exclude domain="file" path="edited_pdfs" />
+    <exclude domain="file" path="split_pdfs" />
+    <exclude domain="file" path="merged_pdfs" />
+    <exclude domain="file" path="locked_pdfs" />
+    <exclude domain="file" path="signed_pdfs" />
+    <exclude domain="file" path="watermarked_pdfs" />
+    <exclude domain="file" path="word_exports" />
+    <exclude domain="file" path="pdf_images" />
+    <exclude domain="file" path="exports" />
+
+    <!--
+        Document database (DocScannerPdfApplication.kt: Room.databaseBuilder(...,
+        "docscanner_pdf.db")). DocumentEntity stores title, extractedText, searchableText
+        and localPdfUri - the OCR body of every scan.
+
+        The SQLite sidecars are named individually because database-domain excludes match
+        a single file, not a prefix. The builder sets no journal mode, so Room applies
+        JournalMode.AUTOMATIC: write-ahead logging (-wal/-shm) on normal devices, and
+        TRUNCATE (-journal) on low-RAM ones. A -wal file holds committed page images, so
+        omitting it would back up the very rows the .db exclusion protects.
+    -->
+    <exclude domain="database" path="docscanner_pdf.db" />
+    <exclude domain="database" path="docscanner_pdf.db-wal" />
+    <exclude domain="database" path="docscanner_pdf.db-shm" />
+    <exclude domain="database" path="docscanner_pdf.db-journal" />
+
 </full-backup-content>
