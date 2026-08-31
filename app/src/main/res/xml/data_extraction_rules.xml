@@ -37,6 +37,7 @@
         <exclude domain="file" path="main_scan_capture" />
         <exclude domain="file" path="main_scan_cropped" />
         <exclude domain="file" path="main_scan_enhanced" />
+        <exclude domain="file" path="main_scan_saved" />
 
         <!-- ID-card scanner: guided capture and every derived stage. -->
         <exclude domain="file" path="id_card_guided_capture" />
@@ -95,6 +96,7 @@
         <exclude domain="file" path="main_scan_capture" />
         <exclude domain="file" path="main_scan_cropped" />
         <exclude domain="file" path="main_scan_enhanced" />
+        <exclude domain="file" path="main_scan_saved" />
 
         <!-- ID-card scanner: guided capture and every derived stage. -->
         <exclude domain="file" path="id_card_guided_capture" />

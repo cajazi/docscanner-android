@@ -147,8 +147,11 @@ import com.dev.docscannerpdf.domain.mainscan.MainScanCropSeeding
 import com.dev.docscannerpdf.domain.mainscan.MainScanCropState
 import com.dev.docscannerpdf.domain.mainscan.MainScanPolygonResolver
 import com.dev.docscannerpdf.domain.mainscan.MainScanRotation
+import com.dev.docscannerpdf.domain.mainscan.MainScanSaveCoordinator
+import com.dev.docscannerpdf.domain.mainscan.MainScanSavedArtifactStore
 import com.dev.docscannerpdf.domain.mainscan.MainScanStage
 import com.dev.docscannerpdf.domain.mainscan.MainScanWorkflow
+import com.dev.docscannerpdf.domain.mainscan.blocksMainScanExit
 import com.dev.docscannerpdf.domain.mainscan.MainScanCaptureState
 import com.dev.docscannerpdf.domain.mainscan.MainScanCaptureTicket
 import com.dev.docscannerpdf.domain.mainscan.MainScanFileOwnership
@@ -283,7 +286,18 @@ class MainActivity : FragmentActivity() {
     // keep annotations aligned with the cropped image. Null when no crop is applied.
     internal var appliedCropQuad by mutableStateOf<PerspectiveQuad?>(null)
     internal var pdfToolsMessage by mutableStateOf<String?>(null)
-    internal var pdfViewerDocument by mutableStateOf<DocumentEntity?>(null)
+    private var pdfViewerDocumentState by mutableStateOf<DocumentEntity?>(null)
+    internal var pdfViewerDocument: DocumentEntity?
+        get() = pdfViewerDocumentState
+        set(value) {
+            val previous = pdfViewerDocumentState
+            pdfViewerDocumentState = value
+            // Retain Main Scanner completion for the viewer lifetime so recreation restores the
+            // exact inserted id. Any real departure, including system Back or delete, consumes it.
+            if (previous?.id == mainScanCompletedDocument?.id && value?.id != previous?.id) {
+                mainScanCompletedDocument = null
+            }
+        }
     internal var viewerDocumentPendingDelete by mutableStateOf<DocumentEntity?>(null)
     internal var viewerDocumentPendingRename by mutableStateOf<DocumentEntity?>(null)
     internal var showCompressPdf by mutableStateOf(false)
@@ -1648,6 +1662,13 @@ class MainActivity : FragmentActivity() {
             mainScanVisit.authoritativeFailure = value
         }
 
+    /** Exact inserted document retained independently of the Activity-local viewer field. */
+    internal var mainScanCompletedDocument: DocumentEntity?
+        get() = mainScanVisit.completedDocument
+        set(value) {
+            mainScanVisit.completedDocument = value
+        }
+
     /**
      * The job advancing the current stage, owned by the RETAINED visit rather than by this activity.
      *
@@ -1672,6 +1693,23 @@ class MainActivity : FragmentActivity() {
     /** App-private directory for the authoritative enhanced sibling. */
     internal val mainScanEnhancedDirectory: File
         get() = File(filesDir, MainScanAuthoritativeRender.ENHANCED_DIRECTORY_NAME)
+
+    /** Durable document-owned Main Scanner pages. This directory is never part of a visit sweep. */
+    internal val mainScanSavedDirectory: File
+        get() = File(filesDir, MainScanSavedArtifactStore.DIRECTORY_NAME)
+
+    private val mainScanSavedArtifactStore by lazy {
+        MainScanSavedArtifactStore(mainScanSavedDirectory)
+    }
+
+    private val mainScanSaveCoordinator by lazy {
+        val repository = (application as DocScannerPdfApplication).repository
+        MainScanSaveCoordinator(
+            promoteArtifact = mainScanSavedArtifactStore::promote,
+            deletePromotedArtifact = mainScanSavedArtifactStore::delete,
+            persistDocument = repository::saveDocument
+        )
+    }
 
     /**
      * Prepares the crop stage for a freshly accepted page: decode EXIF-upright off the main thread,
@@ -1942,6 +1980,102 @@ class MainActivity : FragmentActivity() {
         stale?.let { sweepMainScanAuthoritativeFiles(it) }
     }
 
+    /** Confirm admission changes retained state before the save coroutine can suspend. */
+    internal fun confirmMainScan() {
+        val artifact = mainScanAuthoritative ?: return
+        if (!MainScanWorkflow.allowsConfirm(mainScanStage) ||
+            !MainScanWorkflow.canTransition(mainScanStage, MainScanStage.Confirming)
+        ) return
+        mainScanStage = MainScanStage.Confirming
+        val timestamp = System.currentTimeMillis()
+        mainScanProcessingJob = mainScanVisit.processingScope.launch {
+            persistMainScanArtifact(artifact, timestamp)
+        }
+    }
+
+    private suspend fun persistMainScanArtifact(
+        artifact: MainScanAuthoritativeArtifact,
+        timestamp: Long
+    ) {
+        // This retained-scope call intentionally keeps the Activity that launched it until the
+        // bounded save settles. Completion data is published to MainScanVisitStore first, so a
+        // recreated Activity recovers it; the old Activity's viewer write is only the no-recreation
+        // fast path and cannot replace the retained handoff.
+        val outcome = mainScanSaveCoordinator.confirm(
+            artifact = artifact,
+            title = mainScanDefaultTitle(timestamp),
+            timestamp = timestamp,
+            onPersisting = { transitionMainScanStage(MainScanStage.Persisting) },
+            onCompleted = ::retainMainScanCompletion
+        )
+        handleMainScanSaveOutcome(outcome)
+    }
+
+    private fun mainScanDefaultTitle(timestamp: Long): String =
+        DEFAULT_SCAN_TITLE_PREFIX + " " +
+            SimpleDateFormat("dd-MM-yyyy HH.mm", Locale.getDefault()).format(Date(timestamp))
+
+    private fun transitionMainScanStage(target: MainScanStage) {
+        check(MainScanWorkflow.canTransition(mainScanStage, target))
+        mainScanStage = target
+    }
+
+    private fun handleMainScanSaveOutcome(outcome: MainScanSaveCoordinator.Outcome) {
+        when (outcome) {
+            MainScanSaveCoordinator.Outcome.AlreadySaving -> Unit
+            is MainScanSaveCoordinator.Outcome.Aborted -> {
+                transitionMainScanStage(MainScanStage.EnhancementReview)
+                viewModel.showError(outcome.message)
+                outcome.failure?.let { failure ->
+                    Log.w(TAG, "Main Scanner save aborted before insertion.", failure)
+                }
+            }
+            is MainScanSaveCoordinator.Outcome.Completed ->
+                completeMainScanSuccessfulVisit(outcome.document)
+            is MainScanSaveCoordinator.Outcome.CompletedWithCallbackFailure -> {
+                retainMainScanCompletion(outcome.document)
+                completeMainScanSuccessfulVisit(outcome.document)
+                Log.w(TAG, "Main Scanner completion handoff failed.", outcome.failure)
+            }
+        }
+    }
+
+    /** Exact post-insert identity is retained before transient routing is removed. */
+    private fun retainMainScanCompletion(document: DocumentEntity) {
+        mainScanCompletedDocument = document
+        if (mainScanStage != MainScanStage.Completed) {
+            transitionMainScanStage(MainScanStage.Completed)
+        }
+    }
+
+    /** The current Activity instance presents completion owned by the retained visit. */
+    internal fun presentRetainedMainScanCompletion(document: DocumentEntity) {
+        if (mainScanCompletedDocument?.id == document.id) {
+            pdfViewerDocument = document
+        }
+    }
+
+    /**
+     * Success-only teardown does not cancel the coroutine executing it and keeps Completed terminal.
+     */
+    private fun completeMainScanSuccessfulVisit(document: DocumentEntity) {
+        retainMainScanCompletion(document)
+        // Populate the current host before removing the route that owns this surface. This prevents
+        // one Dashboard frame; the retained completion remains authoritative for recreation.
+        pdfViewerDocument = document
+        val transientVisit = mainScanState
+        showMainScanCapture = false
+        mainScanState = MainScanCaptureFlow.beginVisit(transientVisit)
+        mainScanEnhancedImage = null
+        mainScanCroppedImage = null
+        mainScanWorkingImage = null
+        mainScanCropState = null
+        mainScanAuthoritative = null
+        mainScanAuthoritativeFailure = null
+        // main_scan_saved was never admitted to this transient ledger.
+        sweepMainScanSession(previousState = transientVisit, retainUris = emptySet())
+    }
+
     /** Deletes a retired artifact's two siblings off the main thread, via the owned-file guard. */
     private fun sweepMainScanAuthoritativeFiles(artifact: MainScanAuthoritativeArtifact) {
         sweepMainScanOwnedUris(setOf(artifact.croppedUri, artifact.enhancedUri))
@@ -2007,6 +2141,7 @@ class MainActivity : FragmentActivity() {
      * lost, otherwise exit directly.
      */
     internal fun onMainScanBack() {
+        if (mainScanStage.blocksMainScanExit()) return
         if (MainScanCaptureFlow.backNeedsConfirmation(mainScanState)) {
             requestMainScanDiscard()
         } else {
@@ -2015,6 +2150,7 @@ class MainActivity : FragmentActivity() {
     }
 
     internal fun requestMainScanDiscard() {
+        if (mainScanStage.blocksMainScanExit()) return
         mainScanState = MainScanCaptureFlow.requestDiscard(mainScanState)
     }
 
@@ -2032,6 +2168,7 @@ class MainActivity : FragmentActivity() {
      * a new controller with a clean session rather than reusing the discarded one.
      */
     internal fun confirmMainScanDiscard() {
+        if (mainScanStage.blocksMainScanExit()) return
         val abandoned = mainScanState
         val hadCapturedPage = abandoned.pendingPage != null
         mainScanState = MainScanCaptureFlow.confirmDiscard(abandoned)

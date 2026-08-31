@@ -33,6 +33,7 @@ import com.dev.docscannerpdf.domain.mainscan.MainScanCropEditor
 import com.dev.docscannerpdf.domain.mainscan.MainScanPolygonSource
 import com.dev.docscannerpdf.domain.mainscan.MainScanRouting
 import com.dev.docscannerpdf.domain.mainscan.MainScanStage
+import com.dev.docscannerpdf.domain.mainscan.MainScanWorkflow
 import com.dev.docscannerpdf.domain.mainscan.PrimaryScanTarget
 import com.dev.docscannerpdf.ui.mainscan.MainScanCropEditorScreen
 import com.dev.docscannerpdf.ui.mainscan.MainScanCropHostScreen
@@ -62,6 +63,10 @@ internal fun DocScannerApp(host: MainActivity) {
                 val reviewState = host.imageImportReview
                 val editorState = host.pendingImageImport
                 val previewState = host.importedImagePreview
+                val retainedMainScanCompletion = host.mainScanCompletedDocument
+                LaunchedEffect(retainedMainScanCompletion?.id) {
+                    retainedMainScanCompletion?.let(host::presentRetainedMainScanCompletion)
+                }
                 val viewerDocument = host.pdfViewerDocument?.let { selectedDocument ->
                     uiState.documents.firstOrNull { it.id == selectedDocument.id } ?: selectedDocument
                 }
@@ -164,8 +169,35 @@ internal fun DocScannerApp(host: MainActivity) {
                                 cropped = host.mainScanCroppedImage,
                                 highQualityResultAvailable = host.mainScanAuthoritative != null,
                                 highQualityFailure = host.mainScanAuthoritativeFailure,
-                                onBack = host::backFromMainScanReview
+                                onBack = host::backFromMainScanReview,
+                                confirmEnabled =
+                                    MainScanWorkflow.allowsConfirm(host.mainScanStage) &&
+                                        host.mainScanAuthoritative != null,
+                                onConfirm = host::confirmMainScan
                             )
+                            MainScanStage.Confirming -> MainScanProcessingScreen(
+                                image = host.mainScanEnhancedImage
+                                    ?: host.mainScanCroppedImage
+                                    ?: host.mainScanWorkingImage?.bitmap,
+                                label = "Confirming page..."
+                            )
+                            MainScanStage.Persisting -> MainScanProcessingScreen(
+                                image = host.mainScanEnhancedImage
+                                    ?: host.mainScanCroppedImage
+                                    ?: host.mainScanWorkingImage?.bitmap,
+                                label = "Saving document..."
+                            )
+                            MainScanStage.Completed, MainScanStage.Discarded ->
+                                MainScanProcessingScreen(
+                                    image = host.mainScanEnhancedImage
+                                        ?: host.mainScanCroppedImage
+                                        ?: host.mainScanWorkingImage?.bitmap,
+                                    label = if (host.mainScanStage == MainScanStage.Completed) {
+                                        "Opening document..."
+                                    } else {
+                                        "Closing scanner..."
+                                    }
+                                )
                             // The capture could not be decoded, so there is no image and no polygon.
                             // This must NOT fall through to the crop editor: its empty-image branch
                             // is an indeterminate spinner with no work behind it, which never

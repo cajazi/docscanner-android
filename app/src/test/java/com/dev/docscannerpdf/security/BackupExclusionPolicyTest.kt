@@ -51,7 +51,8 @@ class BackupExclusionPolicyTest {
         val MAIN_SCAN_DIRECTORIES = listOf(
             "main_scan_capture",
             "main_scan_cropped",
-            "main_scan_enhanced"
+            "main_scan_enhanced",
+            "main_scan_saved"
         )
 
         /** ID-card and passport capture and output directories. */

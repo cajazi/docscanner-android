@@ -41,6 +41,16 @@ class MainScanPipelineTeardownTest {
         return found!!.readText()
     }
 
+    private fun appSource(): String {
+        val candidates = listOf(
+            File("src/main/java/com/dev/docscannerpdf/ui/DocScannerApp.kt"),
+            File("app/src/main/java/com/dev/docscannerpdf/ui/DocScannerApp.kt")
+        )
+        val found = candidates.firstOrNull { it.isFile }
+        assertNotNull("could not locate DocScannerApp.kt from ${File("").absolutePath}", found)
+        return found!!.readText()
+    }
+
     /**
      * The body of [name], by brace matching from its declaration.
      *
@@ -67,6 +77,27 @@ class MainScanPipelineTeardownTest {
             index++
         }
         throw AssertionError("unbalanced braces while reading $name")
+    }
+
+    private fun blockBody(source: String, marker: String): String {
+        val declaration = source.indexOf(marker)
+        assertTrue("$marker must exist", declaration >= 0)
+        val open = source.indexOf('{', declaration)
+        assertTrue("$marker must have a block body", open >= 0)
+
+        var depth = 0
+        var index = open
+        while (index < source.length) {
+            when (source[index]) {
+                '{' -> depth++
+                '}' -> {
+                    depth--
+                    if (depth == 0) return source.substring(open + 1, index)
+                }
+            }
+            index++
+        }
+        throw AssertionError("unbalanced braces while reading $marker")
     }
 
     // --- both visit-ending paths tear the pipeline down --------------------------------------------
@@ -254,7 +285,7 @@ class MainScanPipelineTeardownTest {
         val source = activitySource()
         assertEquals(
             "mainScanAuthoritative may only be published once and cleared twice",
-            3,
+            4,
             occurrences(source, "mainScanAuthoritative = ")
         )
         assertTrue(
@@ -315,16 +346,61 @@ class MainScanPipelineTeardownTest {
     // --- persistence is still unreachable --------------------------------------------------------
 
     @Test
-    fun noProductionCodeEntersConfirmingPersistingOrCompleted() {
-        // The artifact exists so a LATER slice can persist. This one must not: the stages after
-        // review stay unreachable, and the enum entries alone are not a way in.
-        val offenders = mainSourceFiles().flatMap { file ->
-            val text = file.readText()
-            listOf("Confirming", "Persisting", "Completed")
-                .filter { text.contains("mainScanStage = MainScanStage.$it") }
-                .map { "${file.name} -> $it" }
+    fun postReviewStageWritesAreConstrainedToTheirExactSaveFunctions() {
+        val activity = activitySource()
+        val contracts = listOf(
+            Triple(
+                "mainScanStage = MainScanStage.Confirming",
+                "confirmMainScan",
+                "Confirming"
+            ),
+            Triple(
+                "transitionMainScanStage(MainScanStage.Persisting)",
+                "persistMainScanArtifact",
+                "Persisting"
+            ),
+            Triple(
+                "transitionMainScanStage(MainScanStage.Completed)",
+                "retainMainScanCompletion",
+                "Completed"
+            )
+        )
+
+        for ((write, owner, stage) in contracts) {
+            assertEquals(
+                "$stage must have exactly one production write",
+                1,
+                mainSourceFiles().sumOf { file -> occurrences(file.readText(), write) }
+            )
+            assertEquals(
+                "$stage may be written only inside $owner",
+                1,
+                occurrences(functionBody(activity, owner), write)
+            )
         }
-        assertTrue("no stage past review may be entered: $offenders", offenders.isEmpty())
+        assertEquals(0, occurrences(activity, "mainScanStage = MainScanStage.Persisting"))
+        assertEquals(0, occurrences(activity, "mainScanStage = MainScanStage.Completed"))
+    }
+
+    @Test
+    fun completedAndDiscardedHaveExplicitTerminalRenderingAndCannotReachCropEditor() {
+        val stageRendering = blockBody(appSource(), "when (host.mainScanStage)")
+        val cropFallback = stageRendering.indexOf("else -> MainScanCropEditorScreen(")
+        assertTrue("the ordinary editing fallback must remain present", cropFallback >= 0)
+
+        for (stage in listOf("Completed", "Discarded")) {
+            val terminalBranch = stageRendering.indexOf("MainScanStage.$stage")
+            assertTrue("$stage must have an explicit stage branch", terminalBranch >= 0)
+            assertTrue(
+                "$stage must be handled before the Crop editor fallback",
+                terminalBranch < cropFallback
+            )
+        }
+        assertTrue(
+            "terminal stages must reuse the neutral processing presentation",
+            stageRendering.substringBefore("else -> MainScanCropEditorScreen(")
+                .contains("MainScanProcessingScreen(")
+        )
     }
 
     @Test

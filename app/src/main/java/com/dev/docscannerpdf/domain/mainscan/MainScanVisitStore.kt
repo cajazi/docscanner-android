@@ -6,6 +6,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.dev.docscannerpdf.data.local.DocumentEntity
 import com.dev.docscannerpdf.ui.mainscan.MainScanWorkingImage
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -92,6 +93,17 @@ class MainScanVisitStore : ViewModel() {
     var authoritativeFailure by mutableStateOf<MainScanRenderFailure?>(null)
 
     /**
+     * Exact Room-inserted document awaiting (or currently displayed by) the existing viewer.
+     *
+     * This is the lifecycle-safe completion handoff. A retained save can finish after the Activity
+     * that launched it has been destroyed, so mutating that Activity's local viewer field would
+     * lose the destination. The recreated host observes this plain data value and routes it into
+     * PdfViewerScreen. It remains retained for the viewer's lifetime so another recreation while
+     * viewing can restore the same exact document id.
+     */
+    var completedDocument by mutableStateOf<DocumentEntity?>(null)
+
+    /**
      * The job advancing the current stage.
      *
      * Retained with the visit rather than with the Activity. On `lifecycleScope` a recreation
@@ -130,6 +142,7 @@ class MainScanVisitStore : ViewModel() {
         workingImage = null
         authoritative = null
         authoritativeFailure = null
+        completedDocument = null
         super.onCleared()
     }
 }
