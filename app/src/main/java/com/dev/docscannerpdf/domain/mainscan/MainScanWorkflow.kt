@@ -166,6 +166,25 @@ object MainScanWorkflow {
     fun allowsConfirm(stage: MainScanStage): Boolean = stage == MainScanStage.EnhancementReview
 
     /**
+     * Stages at which a COMPLETED authoritative render may still publish its artifact.
+     *
+     * The render is the one step whose result outlives the decision that asked for it: it suspends
+     * for a full-resolution decode and write, and by the time it returns the user may have left. The
+     * two stages named here are the only ones a render is ever started from — the crop advance's
+     * [MainScanStage.EnhancementPreparing] and the review's own filter re-render at
+     * [MainScanStage.EnhancementReview] — so any other stage means the visible surface moved on
+     * underneath the work, and its artifact describes a page the user is no longer looking at.
+     *
+     * [MainScanStage.CropEditing] is where Back from the review lands, and it is false here for
+     * exactly that reason: a superseded render that resumed after that Back must not be able to hand
+     * a confirmable artifact to a crop the user has gone back to change. Cancellation alone cannot
+     * close that window, because a coroutine can already be past its last suspension point when it
+     * is cancelled.
+     */
+    fun allowsAuthoritativePublication(stage: MainScanStage): Boolean =
+        stage == MainScanStage.EnhancementPreparing || stage == MainScanStage.EnhancementReview
+
+    /**
      * Whether anything may be written to the database yet. False for every stage before
      * [MainScanStage.Persisting]: capture, crop, enhancement and review are all pre-persistence, and
      * abandoning at any of them must leave no trace in the library.

@@ -88,6 +88,59 @@ object MainScanCaptureImageLoader {
             )
         }
 
+    /**
+     * Longest edge of the INSTANT preview decoded for the crop surface's first frame.
+     *
+     * The locked reference (stage 3) makes this non-negotiable: the crop surface is already showing
+     * the captured frame as it slides in, and detection never gates image visibility. A
+     * full-resolution decode takes hundreds of milliseconds, during which the surface had nothing to
+     * draw and rendered black under the `Processing…` card — the exact defect the reference does not
+     * have. This bound decodes in a few milliseconds and is replaced in place by the full-resolution
+     * image the moment that finishes, at the same geometry, so there is no flash and no reflow.
+     */
+    const val MAX_PREVIEW_EDGE = 720
+
+    /**
+     * Decodes [sourceUri] to a small, EXIF-upright bitmap for immediate display.
+     *
+     * Deliberately NOT a second working image: it is display-only, RGB_565, and no coordinate is
+     * ever normalized against it. [load] remains the single source of the working image the crop
+     * polygon is expressed in.
+     */
+    suspend fun loadPreview(
+        context: Context,
+        sourceUri: Uri,
+        maxEdge: Int = MAX_PREVIEW_EDGE
+    ): Bitmap? = withContext(Dispatchers.IO) {
+        val bounds = readBounds(context, sourceUri)
+        val sampleSize = bounds?.let { computeInSampleSize(it.first, it.second, maxEdge) } ?: 1
+
+        val decoded = runCatching {
+            val options = BitmapFactory.Options().apply {
+                inSampleSize = sampleSize.coerceAtLeast(1)
+                inPreferredConfig = Bitmap.Config.RGB_565
+            }
+            context.contentResolver.openInputStream(sourceUri)?.use { stream ->
+                BitmapFactory.decodeStream(stream, null, options)
+            }
+        }.getOrNull() ?: return@withContext null
+
+        val degrees = IdScanPostProcessor.rotationDegreesFromExif(context, sourceUri)
+        if (degrees == 0) return@withContext decoded
+
+        val rotated = runCatching {
+            val matrix = Matrix().apply { postRotate(degrees.toFloat()) }
+            Bitmap.createBitmap(decoded, 0, 0, decoded.width, decoded.height, matrix, true)
+        }.getOrNull()
+        if (rotated == null) {
+            // Same fail-closed rule as [load]: a sideways preview would misrepresent the capture.
+            decoded.recycle()
+            return@withContext null
+        }
+        if (rotated !== decoded) decoded.recycle()
+        rotated
+    }
+
     /** Header-only bounds read — never decodes pixels. */
     private fun readBounds(context: Context, uri: Uri): Pair<Int, Int>? = runCatching {
         val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }

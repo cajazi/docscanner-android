@@ -115,6 +115,13 @@ class MainScanVisitSurvivalTest {
         "mainScanAuthoritative" to "authoritative",
         "mainScanAuthoritativeFailure" to "authoritativeFailure",
         "mainScanCompletedDocument" to "completedDocument",
+        // The review owns these three, and they are as much "the visit" as the polygon is: a
+        // recreation that kept the artifact but reset the filter would save a page in a look the
+        // user did not choose, and one that reset the title would save it under a name they did
+        // not type.
+        "mainScanFilter" to "filter",
+        "mainScanFilterRendering" to "filterRendering",
+        "mainScanTitle" to "title",
         "mainScanProcessingJob" to "processingJob"
     )
 

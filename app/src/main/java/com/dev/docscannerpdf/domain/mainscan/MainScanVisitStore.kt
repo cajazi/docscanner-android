@@ -7,6 +7,7 @@ import androidx.compose.runtime.setValue
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.dev.docscannerpdf.data.local.DocumentEntity
+import com.dev.docscannerpdf.domain.filter.DocumentFilter
 import com.dev.docscannerpdf.ui.mainscan.MainScanWorkingImage
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -79,6 +80,35 @@ class MainScanVisitStore : ViewModel() {
     var enhancedImage by mutableStateOf<Bitmap?>(null)
 
     /**
+     * The filter the review has selected, and therefore the filter the SAVED page carries.
+     *
+     * Retained with the visit for the same reason the polygon is: the artifact is authoritative only
+     * for the filter it was rendered with, so a lifecycle event that kept one and dropped the other
+     * would produce a page that does not match the review the user confirmed. `ENHANCE` is the
+     * default because the reference opens the review already enhanced, not on the original.
+     */
+    var filter by mutableStateOf(DocumentFilter.ENHANCE)
+
+    /**
+     * True while a filter (or rotation) change is re-rendering the preview and the artifact.
+     *
+     * Deliberately NOT a workflow stage. The reference keeps the review's chrome and the page on
+     * screen throughout and draws only a small `Processing…` card over the image, so the surface is
+     * still `EnhancementReview`; a stage change here would swap the whole surface out, which is the
+     * behaviour the reference does not have. Confirm is gated on this separately.
+     */
+    var filterRendering by mutableStateOf(false)
+
+    /**
+     * The document title shown in the review and written by Confirm.
+     *
+     * Seeded once when the review is first reached and then owned by the user's edits. Held here so
+     * a recreation mid-review cannot silently discard a title the user has already typed and save
+     * the generated one instead.
+     */
+    var title by mutableStateOf<String?>(null)
+
+    /**
      * The only persistable result of the pipeline: the source-resolution post-crop artifact.
      *
      * It is retained for the same reason the polygon is. The artifact is authoritative only for the
@@ -118,6 +148,19 @@ class MainScanVisitStore : ViewModel() {
     var processingJob: Job? = null
 
     /**
+     * The review's OWN filter re-render, tracked apart from [processingJob].
+     *
+     * [processingJob] is one slot shared by every stage-advancing coroutine, Confirm's persistence
+     * included, so it is not a handle Back may pull: cancelling it to stop a superseded filter
+     * render would be cancelling whatever is in it. This tracker is the narrow identity that makes
+     * "cancel the review's render, and nothing else" expressible — see [MainScanReviewRender].
+     *
+     * Retained with the visit for the same reason the job is: whichever Activity instance is on
+     * screen when Back arrives must be able to stop the render this visit started.
+     */
+    val reviewRender = MainScanReviewRender()
+
+    /**
      * The scope that job runs in. [viewModelScope] is `Dispatchers.Main.immediate` + a
      * `SupervisorJob`, matching what `lifecycleScope` provided, and is cancelled when this store is
      * cleared — so the retained work is bounded by the visit and is not an unmanaged global scope.
@@ -137,12 +180,15 @@ class MainScanVisitStore : ViewModel() {
     override fun onCleared() {
         processingJob?.cancel()
         processingJob = null
+        reviewRender.cancelActive()
         enhancedImage = null
         croppedImage = null
         workingImage = null
         authoritative = null
         authoritativeFailure = null
         completedDocument = null
+        title = null
+        filterRendering = false
         super.onCleared()
     }
 }

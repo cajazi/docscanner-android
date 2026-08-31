@@ -279,24 +279,46 @@ class MainScanPipelineTeardownTest {
     }
 
     @Test
-    fun theAuthoritativeFieldIsAssignedOnlyInTheThreeApprovedPlaces() {
-        // Publication, Back, and teardown. A fourth assignment anywhere would be a way for the
-        // field to be set without the transaction that makes it trustworthy.
+    fun theAuthoritativeFieldIsAssignedOnlyInTheApprovedPlaces() {
+        // Publication plus the four approved invalidation boundaries. Filter selection is an
+        // authority boundary because selecting different pixels makes the previously rendered
+        // artifact stale immediately, before any asynchronous re-render can suspend.
         val source = activitySource()
         assertEquals(
-            "mainScanAuthoritative may only be published once and cleared twice",
-            4,
+            "mainScanAuthoritative may only be published once and cleared at four approved boundaries",
+            5,
             occurrences(source, "mainScanAuthoritative = ")
         )
         assertTrue(
             functionBody(source, "renderMainScanAuthoritative")
                 .contains("mainScanAuthoritative = outcome.artifact")
         )
+
+        val filterBody = functionBody(source, "selectMainScanFilter")
+        val filterClear = filterBody.indexOf("mainScanAuthoritative = null")
+        val filterMutation = filterBody.indexOf("mainScanFilter = filter")
+        val filterLaunch = filterBody.indexOf("mainScanVisit.processingScope.launch")
+        assertTrue("filter selection must synchronously revoke stale authority", filterClear >= 0)
         assertTrue(
-            functionBody(source, "backFromMainScanReview").contains("mainScanAuthoritative = null")
+            "authority must be revoked before the selected filter changes",
+            filterMutation > filterClear
         )
         assertTrue(
-            functionBody(source, "clearMainScanPipeline").contains("mainScanAuthoritative = null")
+            "authority must be revoked before asynchronous filter rendering starts",
+            filterLaunch > filterClear
+        )
+
+        assertTrue(
+            functionBody(source, "backFromMainScanReview")
+                .contains("mainScanAuthoritative = null")
+        )
+        assertTrue(
+            functionBody(source, "completeMainScanSuccessfulVisit")
+                .contains("mainScanAuthoritative = null")
+        )
+        assertTrue(
+            functionBody(source, "clearMainScanPipeline")
+                .contains("mainScanAuthoritative = null")
         )
     }
 
