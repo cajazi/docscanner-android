@@ -57,6 +57,9 @@ class MainScanVisitSurvivalTest {
     private fun storeSource(): String =
         sourceFile("com/dev/docscannerpdf/domain/mainscan/MainScanVisitStore.kt").readText()
 
+    private fun appSource(): String =
+        sourceFile("com/dev/docscannerpdf/ui/DocScannerApp.kt").readText()
+
     /**
      * The body of [name] in [source], by brace matching from its declaration. Deliberately not a
      * whole-file `contains`: a call must be inside the function that is responsible for it, so
@@ -111,6 +114,7 @@ class MainScanVisitSurvivalTest {
         "mainScanEnhancedImage" to "enhancedImage",
         "mainScanAuthoritative" to "authoritative",
         "mainScanAuthoritativeFailure" to "authoritativeFailure",
+        "mainScanCompletedDocument" to "completedDocument",
         "mainScanProcessingJob" to "processingJob"
     )
 
@@ -268,7 +272,7 @@ class MainScanVisitSurvivalTest {
         val activity = activitySource()
         assertEquals(
             "beginVisit may only be called where a visit actually begins or is abandoned",
-            2,
+            3,
             occurrences(activity, "MainScanCaptureFlow.beginVisit(")
         )
         assertTrue(
@@ -276,6 +280,10 @@ class MainScanVisitSurvivalTest {
         )
         assertTrue(
             functionBody(activity, "closeMainScanCapture").contains("MainScanCaptureFlow.beginVisit(")
+        )
+        assertTrue(
+            functionBody(activity, "completeMainScanSuccessfulVisit")
+                .contains("MainScanCaptureFlow.beginVisit(")
         )
     }
 
@@ -499,6 +507,76 @@ class MainScanVisitSurvivalTest {
         assertTrue(
             "a refusal must leave the retained visit exactly as it was",
             body.substring(guard, stageWrite).contains("return")
+        )
+    }
+
+    @Test
+    fun everyBackAndDiscardPathChecksTheSaveGuardBeforeVisitTeardown() {
+        val activity = activitySource()
+        val guardedOperations = mapOf(
+            "onMainScanBack" to listOf("requestMainScanDiscard()", "closeMainScanCapture()"),
+            "requestMainScanDiscard" to
+                listOf("MainScanCaptureFlow.requestDiscard(mainScanState)"),
+            "confirmMainScanDiscard" to listOf("clearMainScanPipeline()")
+        )
+
+        for ((name, operations) in guardedOperations) {
+            val body = functionBody(activity, name)
+            val guard = body.indexOf("if (mainScanStage.blocksMainScanExit()) return")
+            assertTrue("$name must reject Confirming and Persisting", guard >= 0)
+            for (operation in operations) {
+                val operationIndex = body.indexOf(operation)
+                assertTrue("$name must retain its expected operation $operation", operationIndex >= 0)
+                assertTrue(
+                    "$name must check the save guard before $operation can end or mutate the visit",
+                    guard < operationIndex
+                )
+            }
+        }
+    }
+
+    @Test
+    fun retainedCompletionSurvivesRecreationAndRestoresTheExactViewerDocument() {
+        val store = storeSource()
+        val activity = activitySource()
+        val app = appSource()
+
+        assertTrue(
+            "the exact inserted entity must live on the retained ViewModel",
+            store.contains("var completedDocument by mutableStateOf<DocumentEntity?>(null)")
+        )
+        val presenter = functionBody(activity, "presentRetainedMainScanCompletion")
+        assertTrue(
+            "recovery must reject stale identities",
+            presenter.contains("mainScanCompletedDocument?.id == document.id")
+        )
+        assertTrue(
+            "the exact retained instance must be handed to the viewer",
+            presenter.contains("pdfViewerDocument = document")
+        )
+        val effect = app.indexOf("LaunchedEffect(retainedMainScanCompletion?.id)")
+        val handoff = app.indexOf(
+            "retainedMainScanCompletion?.let(host::presentRetainedMainScanCompletion)",
+            startIndex = effect
+        )
+        assertTrue("Compose must observe retained completion by exact id", effect >= 0)
+        assertTrue("recreation must replay the retained viewer handoff", handoff > effect)
+    }
+
+    @Test
+    fun successfulVisitSetsViewerBeforeRemovingTheMainScannerSurface() {
+        val body = functionBody(activitySource(), "completeMainScanSuccessfulVisit")
+        val retain = body.indexOf("retainMainScanCompletion(document)")
+        val viewer = body.indexOf("pdfViewerDocument = document")
+        val removeRoute = body.indexOf("showMainScanCapture = false")
+
+        assertTrue("successful completion must remain retained", retain >= 0)
+        assertTrue("successful completion must set the current viewer directly", viewer >= 0)
+        assertTrue("successful completion must remove the Main Scanner route", removeRoute >= 0)
+        assertTrue("retained state must be authoritative before presentation", retain < viewer)
+        assertTrue(
+            "viewer state must exist before routing can expose the Dashboard branch",
+            viewer < removeRoute
         )
     }
 

@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -14,6 +15,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
@@ -220,7 +222,9 @@ fun MainScanEnhancementReviewScreen(
     cropped: Bitmap?,
     highQualityResultAvailable: Boolean,
     highQualityFailure: MainScanRenderFailure?,
-    onBack: () -> Unit
+    onBack: () -> Unit,
+    confirmEnabled: Boolean,
+    onConfirm: () -> Unit
 ) {
     DarkSystemBarsEffect()
     // Enhancement is an improvement, not a requirement: when it failed, the true cropped page is
@@ -246,7 +250,7 @@ fun MainScanEnhancementReviewScreen(
                 "so this can't be saved. Go back and try the crop again."
 
         enhancementApplied ->
-            "Cropped and enhanced at full quality. Saving arrives in the next step."
+            "Cropped and enhanced at full quality. Ready to save."
 
         // The artifact is always enhanced when it exists — the render fails closed rather than
         // publishing an unenhanced one — so only the PREVIEW is missing its enhancement here, and
@@ -306,6 +310,14 @@ fun MainScanEnhancementReviewScreen(
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.SemiBold
                 )
+                Spacer(modifier = Modifier.weight(1f))
+                IconButton(onClick = onConfirm, enabled = confirmEnabled) {
+                    Icon(
+                        Icons.Default.Check,
+                        contentDescription = "Save document",
+                        tint = if (confirmEnabled) MainScanAccent else Color(0xFF6B6D72)
+                    )
+                }
             }
 
             Box(
