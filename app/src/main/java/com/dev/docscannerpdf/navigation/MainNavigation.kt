@@ -96,10 +96,13 @@ internal fun MainActivity.handleSystemBack() {
         showIdCardGuidedCapture -> showIdCardGuidedCapture = false
         showPassportCapture -> showPassportCapture = false
         // Main Scanner Back is a discard DECISION, never a silent drop of captured pixels. The
-        // dialog closes first; then a pending page (or an owned temp file) requires confirmation;
-        // a pristine capture surface with nothing to lose exits directly.
+        // dialog closes first; then a captured page goes through the ONE stage-aware decision the
+        // on-screen affordance uses, so system and predictive Back cannot diverge from the arrow the
+        // user can see — in particular, Back from the enhancement review returns to crop editing
+        // instead of raising a discard dialog. A pristine capture surface with nothing to lose exits
+        // directly.
         mainScanState.discardConfirmVisible -> cancelMainScanDiscard()
-        mainScanState.pendingPage != null -> requestMainScanDiscard()
+        mainScanState.pendingPage != null -> onMainScanPageBack()
         showMainScanCapture -> onMainScanBack()
         passportCropRect != null -> cancelPassportCropEditor()
         // A passport save is an IMMUTABLE transaction: while it runs, system/predictive Back is

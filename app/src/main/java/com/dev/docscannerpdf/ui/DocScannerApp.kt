@@ -146,58 +146,69 @@ internal fun DocScannerApp(host: MainActivity) {
                             // Decode and polygon resolution: the captured JPEG is shown straight
                             // from disk with a small centred indicator over it, so the surface has
                             // real pixels from the first frame rather than a spinner on black.
+                            // Every Back affordance on this surface — and system/predictive Back —
+                            // is the SAME call. onMainScanPageBack asks MainScanWorkflow.backTarget
+                            // what Back means at the current stage, so the visible arrow can never
+                            // resolve to a different transition than the gesture does.
                             MainScanStage.CropPreparing, MainScanStage.CaptureAccepted ->
                                 MainScanCropHostScreen(
                                     pageUri = pendingUri,
-                                    onBack = host::requestMainScanDiscard
+                                    onBack = host::onMainScanPageBack
                                 )
+                            // The processing stages get a REAL Back, not a decoration: the governed
+                            // rule has no in-workflow predecessor for them, so it resolves to the
+                            // ordinary discard decision — the same one the crop editor's arrow
+                            // raises. Leaving the arrow off was the divergence: system Back was
+                            // answerable here while the surface showed no way to do it.
                             MainScanStage.Cropping -> MainScanProcessingScreen(
                                 image = host.mainScanWorkingImage?.bitmap,
-                                label = "Cropping image…"
+                                label = "Cropping image…",
+                                onBack = host::onMainScanPageBack
                             )
                             MainScanStage.EnhancementPreparing -> MainScanProcessingScreen(
                                 image = host.mainScanCroppedImage
                                     ?: host.mainScanWorkingImage?.bitmap,
-                                label = "Enhancing image…"
+                                label = "Enhancing image…",
+                                onBack = host::onMainScanPageBack
                             )
                             // The two bitmaps are previews; the third argument is the only thing
                             // that says whether a saveable, source-resolution page exists behind
                             // them. Passing the artifact's presence rather than a bitmap is what
                             // keeps a preview from ever standing in for one.
-                            MainScanStage.EnhancementReview -> MainScanEnhancementReviewScreen(
+                            // The review surface stays mounted for the WHOLE of Confirm.
+                            //
+                            // The reference has no "Confirming", no "Saving document" and no
+                            // "Opening document" screen: the check is tapped and the next thing on
+                            // screen is the saved document's viewer. Swapping in a labelled
+                            // progress surface for each of those stages is a step the reference
+                            // does not have, and it was long enough to read. Confirm is instead
+                            // gated by `confirmEnabled` below, which is false for every stage past
+                            // EnhancementReview — so the page and its chrome simply stay put,
+                            // inert, until the viewer replaces them.
+                            MainScanStage.EnhancementReview,
+                            MainScanStage.Confirming,
+                            MainScanStage.Persisting,
+                            MainScanStage.Completed,
+                            MainScanStage.Discarded -> MainScanEnhancementReviewScreen(
                                 enhanced = host.mainScanEnhancedImage,
                                 cropped = host.mainScanCroppedImage,
                                 highQualityResultAvailable = host.mainScanAuthoritative != null,
                                 highQualityFailure = host.mainScanAuthoritativeFailure,
-                                onBack = host::backFromMainScanReview,
+                                title = host.mainScanTitle.orEmpty(),
+                                onTitleChange = host::onMainScanTitleChange,
+                                selectedFilter = host.mainScanFilter,
+                                onFilterSelected = host::selectMainScanFilter,
+                                filterRendering = host.mainScanFilterRendering,
+                                onBack = host::onMainScanPageBack,
+                                // A saveable artifact must exist AND not be mid-re-render: while a
+                                // filter change is running the published artifact has deliberately
+                                // been dropped, so there is nothing Confirm could correctly write.
                                 confirmEnabled =
                                     MainScanWorkflow.allowsConfirm(host.mainScanStage) &&
+                                        !host.mainScanFilterRendering &&
                                         host.mainScanAuthoritative != null,
                                 onConfirm = host::confirmMainScan
                             )
-                            MainScanStage.Confirming -> MainScanProcessingScreen(
-                                image = host.mainScanEnhancedImage
-                                    ?: host.mainScanCroppedImage
-                                    ?: host.mainScanWorkingImage?.bitmap,
-                                label = "Confirming page..."
-                            )
-                            MainScanStage.Persisting -> MainScanProcessingScreen(
-                                image = host.mainScanEnhancedImage
-                                    ?: host.mainScanCroppedImage
-                                    ?: host.mainScanWorkingImage?.bitmap,
-                                label = "Saving document..."
-                            )
-                            MainScanStage.Completed, MainScanStage.Discarded ->
-                                MainScanProcessingScreen(
-                                    image = host.mainScanEnhancedImage
-                                        ?: host.mainScanCroppedImage
-                                        ?: host.mainScanWorkingImage?.bitmap,
-                                    label = if (host.mainScanStage == MainScanStage.Completed) {
-                                        "Opening document..."
-                                    } else {
-                                        "Closing scanner..."
-                                    }
-                                )
                             // The capture could not be decoded, so there is no image and no polygon.
                             // This must NOT fall through to the crop editor: its empty-image branch
                             // is an indeterminate spinner with no work behind it, which never
@@ -217,7 +228,7 @@ internal fun DocScannerApp(host: MainActivity) {
                                 onRotate = host::rotateMainScanCrop,
                                 onResetAll = host::resetMainScanCropToFullFrame,
                                 onNext = host::advanceMainScanCrop,
-                                onBack = host::requestMainScanDiscard
+                                onBack = host::onMainScanPageBack
                             )
                         }
                         // Back on THIS surface raises the same discard decision the capture surface

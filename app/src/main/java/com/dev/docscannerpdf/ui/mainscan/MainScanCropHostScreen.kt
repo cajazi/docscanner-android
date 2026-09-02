@@ -21,12 +21,18 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.produceState
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.core.net.toUri
 import coil.compose.AsyncImagePainter
 import coil.compose.rememberAsyncImagePainter
 import com.dev.docscannerpdf.domain.mainscan.MainScanTrace
@@ -72,8 +78,20 @@ fun MainScanCropHostScreen(
     // request internally, so no request object is rebuilt per recomposition.
     val painter = rememberAsyncImagePainter(model = pageUri)
     val imageState = painter.state
+    val fullResolutionReady = imageState is AsyncImagePainter.State.Success
     val decoding = imageState is AsyncImagePainter.State.Loading ||
         imageState is AsyncImagePainter.State.Empty
+
+    // The reference's hard requirement for stage 3: the captured frame is on screen BEFORE
+    // detection completes, and there is no blank, white, tiny or stale frame at any point. A
+    // full-resolution Coil decode draws NOTHING while it is loading, so the surface was black
+    // under the Processing card for as long as that decode took. This small EXIF-upright decode
+    // lands in a few milliseconds and is drawn underneath, at the same geometry and the same
+    // ContentScale, so the full-resolution image replaces it in place with no flash and no reflow.
+    val context = LocalContext.current
+    val instantPreview by produceState<android.graphics.Bitmap?>(initialValue = null, pageUri) {
+        value = MainScanCaptureImageLoader.loadPreview(context, pageUri.toUri())
+    }
 
     LaunchedEffect(pageUri) { MainScanTrace.cropMounted(hasPageUri = pageUri.isNotBlank()) }
     LaunchedEffect(imageState::class) {
@@ -122,9 +140,23 @@ fun MainScanCropHostScreen(
                     .background(Color.Black),
                 contentAlignment = Alignment.Center
             ) {
+                // Drawn only until the full-resolution image is genuinely ready, so the two are
+                // never composited on top of each other and the user never sees a low-detail page
+                // once real pixels exist.
+                val preview = instantPreview
+                if (!fullResolutionReady && preview != null) {
+                    val previewBitmap = remember(preview) { preview.asImageBitmap() }
+                    Image(
+                        bitmap = previewBitmap,
+                        contentDescription = "Captured page",
+                        contentScale = ContentScale.Fit,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                }
+
                 Image(
                     painter = painter,
-                    contentDescription = "Captured page",
+                    contentDescription = if (fullResolutionReady) "Captured page" else null,
                     contentScale = ContentScale.Fit,
                     modifier = Modifier.fillMaxSize()
                 )

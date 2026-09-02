@@ -226,6 +226,8 @@ import java.util.Locale
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
@@ -1670,6 +1672,30 @@ class MainActivity : FragmentActivity() {
         }
 
     /**
+     * The filter the review has selected. Reading and writing it through the retained visit keeps it
+     * consistent with the artifact it was rendered into across an Activity recreation.
+     */
+    internal var mainScanFilter: DocumentFilter
+        get() = mainScanVisit.filter
+        set(value) {
+            mainScanVisit.filter = value
+        }
+
+    /** True while a filter or rotation change is re-rendering the preview and the artifact. */
+    internal var mainScanFilterRendering: Boolean
+        get() = mainScanVisit.filterRendering
+        set(value) {
+            mainScanVisit.filterRendering = value
+        }
+
+    /** The editable document title the review shows and Confirm writes. */
+    internal var mainScanTitle: String?
+        get() = mainScanVisit.title
+        set(value) {
+            mainScanVisit.title = value
+        }
+
+    /**
      * The job advancing the current stage, owned by the RETAINED visit rather than by this activity.
      *
      * On `lifecycleScope` a recreation cancelled it mid-crop or mid-enhance while the stage it was
@@ -1842,7 +1868,7 @@ class MainActivity : FragmentActivity() {
             mainScanCroppedImage = cropped
             mainScanStage = MainScanStage.EnhancementPreparing
 
-            val enhanced = MainScanCaptureProcessor.applyFilter(cropped, DocumentFilter.ENHANCE)
+            val enhanced = MainScanCaptureProcessor.applyFilter(cropped, mainScanFilter)
             if (enhanced == null) {
                 MainScanTrace.processingFailed(stage = "enhance")
                 // Enhancement is an improvement, not a requirement: fall back to the true cropped
@@ -1861,6 +1887,11 @@ class MainActivity : FragmentActivity() {
                 editorFrame = working
             )
 
+            // Seeded ONCE. A re-entry of the review (Back to crop and forward again, or a filter
+            // re-render) must never overwrite a title the user has already typed.
+            if (mainScanTitle == null) {
+                mainScanTitle = mainScanDefaultTitle(System.currentTimeMillis())
+            }
             mainScanStage = MainScanStage.EnhancementReview
             MainScanTrace.reviewReached(enhanced = enhanced != null)
         }
@@ -1921,9 +1952,25 @@ class MainActivity : FragmentActivity() {
             editorFrameHeight = editorFrame.height,
             croppedTarget = croppedTarget,
             enhancedTarget = enhancedTarget,
-            filter = DocumentFilter.ENHANCE,
+            filter = mainScanFilter,
             retainedBitmapBytes = retainedMainScanPreviewBytes()
         )
+
+        // A SUPERSEDED render must not publish. Cancellation alone cannot close this window: a
+        // coroutine can already be past its last suspension point when it is cancelled, and the
+        // publication below is a plain assignment with nothing to suspend at. So the transaction
+        // checks both halves of "is this still the render that matters" — its own liveness, which
+        // catches one filter selection superseded by the next, and the workflow's publication gate,
+        // which catches the visible surface having moved on (Back to crop editing, a discard, a
+        // finished visit). Refusing publishes nothing and retires nothing: the previously published
+        // artifact is untouched and only this candidate's own two paths are cleaned, through the
+        // same owned-file contract the failure branch uses.
+        if (!currentCoroutineContext().isActive ||
+            !MainScanWorkflow.allowsAuthoritativePublication(mainScanStage)
+        ) {
+            sweepMainScanOwnedUris(setOf(croppedUri, enhancedUri))
+            return
+        }
 
         when (outcome) {
             is MainScanRenderOutcome.Authoritative -> {
@@ -1961,6 +2008,65 @@ class MainActivity : FragmentActivity() {
         }
     }
 
+    /** The user renamed the page in the review. Owned by the retained visit, not by this Activity. */
+    internal fun onMainScanTitleChange(value: String) {
+        if (mainScanStage != MainScanStage.EnhancementReview) return
+        mainScanTitle = value
+    }
+
+    /**
+     * Selects a filter in the review and re-renders BOTH the preview and the saveable artifact.
+     *
+     * The reference switches filters without leaving the review: the page and the chrome stay on
+     * screen and only a small `Processing…` card appears over the image. So this deliberately does
+     * not move the workflow stage — it raises [mainScanFilterRendering], which the surface draws the
+     * card from and Confirm is gated on.
+     *
+     * Authority is dropped FIRST and synchronously, for the same reason Back from the review drops
+     * it: from the instant another filter is chosen, the published artifact describes a page the
+     * user is no longer looking at, and a suspension point before the clear would leave a window in
+     * which Confirm could write the previous filter's pixels. The stale files are only swept
+     * afterwards, through the owned-file contract.
+     */
+    internal fun selectMainScanFilter(filter: DocumentFilter) {
+        if (!MainScanWorkflow.allowsFilterSelection(mainScanStage)) return
+        if (mainScanFilterRendering || filter == mainScanFilter) return
+        val cropped = mainScanCroppedImage ?: return
+        val cropState = mainScanCropState ?: return
+        val working = mainScanWorkingImage ?: return
+        val pageUri = mainScanState.pendingPage?.uri?.toUri() ?: return
+
+        val stale = mainScanAuthoritative
+        mainScanAuthoritative = null
+        mainScanAuthoritativeFailure = null
+        mainScanFilter = filter
+        mainScanFilterRendering = true
+        mainScanProcessingJob?.cancel()
+        val renderJob = mainScanVisit.processingScope.launch {
+            try {
+                // The filter is applied to the CROPPED page, never to an already-filtered one:
+                // re-filtering compounds sharpening and contrast with no way back.
+                mainScanEnhancedImage = MainScanCaptureProcessor.applyFilter(cropped, filter)
+                renderMainScanAuthoritative(
+                    pageUri = pageUri,
+                    cropState = cropState,
+                    editorFrame = working
+                )
+            } finally {
+                // Runs on cancellation too, so a superseded selection can never leave the review
+                // permanently showing a card with no work behind it.
+                mainScanFilterRendering = false
+            }
+        }
+        mainScanProcessingJob = renderJob
+        // The SAME job, recorded under the review's own narrow handle. Back out of the review
+        // cancels through that handle and only that handle, so it can stop this render without
+        // being able to reach a crop advance or — the reason this identity exists at all — a
+        // Confirm persistence that the shared slot may be holding at some other moment.
+        mainScanVisit.reviewRender.track(renderJob)
+        stale?.let { sweepMainScanAuthoritativeFiles(it) }
+    }
+
     /**
      * Back from the enhancement review returns to crop editing without losing the polygon.
      *
@@ -1972,6 +2078,17 @@ class MainActivity : FragmentActivity() {
      */
     internal fun backFromMainScanReview() {
         if (mainScanStage != MainScanStage.EnhancementReview) return
+        // The review's filter render is superseded the instant Back is pressed, so it is cancelled
+        // FIRST — before the stage moves — through the review's own handle rather than through
+        // mainScanProcessingJob, which is shared with the crop pipeline and with Confirm's
+        // persistence and must never be cancelled from here. Cancellation is only half of it: a
+        // render already past its last suspension point still returns, and the publication gate in
+        // renderMainScanAuthoritative is what refuses it once this stage write has landed.
+        mainScanVisit.reviewRender.cancelActive()
+        // The card the cancelled render was drawing goes with it, synchronously. The coroutine's own
+        // `finally` clears this too, but only when it unwinds, and the review must not be able to
+        // re-open still claiming that work is in flight.
+        mainScanFilterRendering = false
         val stale = mainScanAuthoritative
         mainScanAuthoritative = null
         mainScanAuthoritativeFailure = null
@@ -1988,13 +2105,18 @@ class MainActivity : FragmentActivity() {
         ) return
         mainScanStage = MainScanStage.Confirming
         val timestamp = System.currentTimeMillis()
+        // The title the user actually sees in the review, falling back to the generated one only
+        // when they have cleared it to nothing.
+        val title = mainScanTitle?.trim()?.takeIf { it.isNotEmpty() }
+            ?: mainScanDefaultTitle(timestamp)
         mainScanProcessingJob = mainScanVisit.processingScope.launch {
-            persistMainScanArtifact(artifact, timestamp)
+            persistMainScanArtifact(artifact, title, timestamp)
         }
     }
 
     private suspend fun persistMainScanArtifact(
         artifact: MainScanAuthoritativeArtifact,
+        title: String,
         timestamp: Long
     ) {
         // This retained-scope call intentionally keeps the Activity that launched it until the
@@ -2003,7 +2125,7 @@ class MainActivity : FragmentActivity() {
         // fast path and cannot replace the retained handoff.
         val outcome = mainScanSaveCoordinator.confirm(
             artifact = artifact,
-            title = mainScanDefaultTitle(timestamp),
+            title = title,
             timestamp = timestamp,
             onPersisting = { transitionMainScanStage(MainScanStage.Persisting) },
             onCompleted = ::retainMainScanCompletion
@@ -2072,6 +2194,9 @@ class MainActivity : FragmentActivity() {
         mainScanCropState = null
         mainScanAuthoritative = null
         mainScanAuthoritativeFailure = null
+        mainScanTitle = null
+        mainScanFilter = DocumentFilter.ENHANCE
+        mainScanFilterRendering = false
         // main_scan_saved was never admitted to this transient ledger.
         sweepMainScanSession(previousState = transientVisit, retainUris = emptySet())
     }
@@ -2122,6 +2247,9 @@ class MainActivity : FragmentActivity() {
     private fun clearMainScanPipeline() {
         mainScanProcessingJob?.cancel()
         mainScanProcessingJob = null
+        // The review's handle is forgotten with the visit too: left tracked, it would name a job
+        // belonging to a page that no longer exists.
+        mainScanVisit.reviewRender.cancelActive()
         mainScanEnhancedImage = null
         mainScanCroppedImage = null
         mainScanWorkingImage = null
@@ -2132,6 +2260,12 @@ class MainActivity : FragmentActivity() {
         // race the ledger it does not own.
         mainScanAuthoritative = null
         mainScanAuthoritativeFailure = null
+        // Review-owned values die with the visit too. A retained title or a retained filter would
+        // otherwise be inherited by the NEXT capture, which would then save under the previous
+        // page's name or in the previous page's look.
+        mainScanTitle = null
+        mainScanFilter = DocumentFilter.ENHANCE
+        mainScanFilterRendering = false
         mainScanStage = MainScanStage.CameraReady
     }
 
@@ -2147,6 +2281,35 @@ class MainActivity : FragmentActivity() {
         } else {
             closeMainScanCapture()
         }
+    }
+
+    /**
+     * The SINGLE Back decision for a CAPTURED page, consumed by the on-screen affordance on every
+     * crop/processing/review surface AND by system/predictive Back (see
+     * [com.dev.docscannerpdf.navigation.handleSystemBack]). One function, one table: the visible
+     * arrow and the gesture cannot resolve to different transitions, because they are the same call.
+     *
+     * The table it consults is [MainScanWorkflow.backTarget] and nothing else. Review steps back to
+     * crop editing so a filter change does not cost the user their polygon; every stage that has no
+     * in-workflow predecessor leaves through the existing discard decision, which is where "there is
+     * a captured page to lose" is already answered.
+     *
+     * The two guards are the stages where Back is genuinely inert rather than merely undecided:
+     * Confirming/Persisting, because the save is a transaction and interrupting it is what would
+     * produce a half-written document; and Completed/Discarded, because the visit is already over
+     * and raising a discard decision about a page that has been saved — or already destroyed — would
+     * be a question with no true answer.
+     */
+    internal fun onMainScanPageBack() {
+        if (mainScanStage.blocksMainScanExit()) return
+        if (mainScanStage == MainScanStage.Completed ||
+            mainScanStage == MainScanStage.Discarded
+        ) return
+        if (MainScanWorkflow.backTarget(mainScanStage) != null) {
+            backFromMainScanReview()
+            return
+        }
+        requestMainScanDiscard()
     }
 
     internal fun requestMainScanDiscard() {
