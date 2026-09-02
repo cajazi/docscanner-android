@@ -83,6 +83,69 @@ private val MainScanReviewFilters = listOf(
     DocumentFilter.GRAY
 )
 
+internal data class MainScanReviewPresentation(
+    val statusMessage: String?,
+    val imageDescription: String,
+    val imageStateDescription: String
+)
+
+internal fun mainScanReviewPresentation(
+    filterRendering: Boolean,
+    highQualityResultAvailable: Boolean,
+    highQualityFailure: MainScanRenderFailure?,
+    enhancementApplied: Boolean,
+    comparing: Boolean
+): MainScanReviewPresentation {
+    val statusMessage = when {
+        filterRendering -> null
+        highQualityResultAvailable -> null
+
+        highQualityFailure == MainScanRenderFailure.INSUFFICIENT_MEMORY ->
+            "Preview only — there wasn't enough memory to produce the full-quality " +
+                "page, so this can't be saved. Close other apps and try again."
+
+        else ->
+            "Preview only — the high-quality page couldn't be produced, " +
+                "so this can't be saved. Go back and try the crop again."
+    }
+
+    val imageDescription = when {
+        comparing -> "The unenhanced cropped page, shown for comparison."
+
+        filterRendering && enhancementApplied ->
+            "Preview of the filtered page while a new filter is being applied."
+
+        filterRendering ->
+            "Preview of the cropped page while a new filter is being applied."
+
+        !highQualityResultAvailable && enhancementApplied ->
+            "Preview of the filtered page. Preview only — this cannot be saved."
+
+        !highQualityResultAvailable ->
+            "Preview of the cropped page, shown without a filter. " +
+                "Preview only — this cannot be saved."
+
+        enhancementApplied ->
+            "Preview of the cropped and filtered page. The full-quality page is ready."
+
+        else ->
+            "Preview of the cropped page, shown without a filter. " +
+                "The full-quality page is ready."
+    }
+
+    val imageStateDescription = when {
+        filterRendering -> "Applying a new filter"
+        highQualityResultAvailable -> "Full-quality page ready"
+        else -> "Preview only, not saveable"
+    }
+
+    return MainScanReviewPresentation(
+        statusMessage = statusMessage,
+        imageDescription = imageDescription,
+        imageStateDescription = imageStateDescription
+    )
+}
+
 /**
  * The enhancement review — the surface the reference reaches after enhancement completes.
  *
@@ -140,49 +203,15 @@ fun MainScanEnhancementReviewScreen(
     val displayed = if (comparing && cropped != null) cropped else filtered
     val compareAvailable = cropped != null && enhanced != null && enhanced !== cropped
 
-    // Computed once and used for BOTH the caption and the accessibility state, so what a sighted
-    // user reads and what a screen reader announces cannot drift apart. Null in the healthy state:
-    // the reference shows no caption there, and there is nothing true left to add.
-    //
-    // No artifact exists, so there is nothing a later Confirm could write. Said plainly, and said
-    // even though the page above looks entirely correct. Running out of memory is the one reason the
-    // user can do something about, so it gets the advice; every other reason gets the same honest
-    // statement without a suggestion that would not help.
-    val statusMessage = when {
-        highQualityResultAvailable -> null
-
-        highQualityFailure == MainScanRenderFailure.INSUFFICIENT_MEMORY ->
-            "Preview only — there wasn't enough memory to produce the full-quality " +
-                "page, so this can't be saved. Close other apps and try again."
-
-        else ->
-            "Preview only — the high-quality page couldn't be produced, " +
-                "so this can't be saved. Go back and try the crop again."
-    }
-
-    // What the image IS, for a user who cannot see it. "Enhanced page" would be a lie in three of
-    // these four states: this surface can be showing an unenhanced crop, and it can be showing a
-    // preview that no saveable page stands behind. A screen reader must not be told the page is
-    // finished when the only thing that exists is the picture of it.
-    val imageDescription = when {
-        comparing -> "The unenhanced cropped page, shown for comparison."
-
-        !highQualityResultAvailable && enhancementApplied ->
-            "Preview of the filtered page. Preview only — this cannot be saved."
-
-        !highQualityResultAvailable ->
-            "Preview of the cropped page, shown without a filter. " +
-                "Preview only — this cannot be saved."
-
-        // Even here the IMAGE is a preview — the artifact is a separate, larger file. Saying so
-        // costs one clause and keeps the description true of the thing actually on screen.
-        enhancementApplied ->
-            "Preview of the cropped and filtered page. The full-quality page is ready."
-
-        else ->
-            "Preview of the cropped page, shown without a filter. " +
-                "The full-quality page is ready."
-    }
+    // Keep the visible caption and accessibility copy on one pure state derivation so render-in-
+    // progress, completed failure, and healthy states cannot drift apart.
+    val presentation = mainScanReviewPresentation(
+        filterRendering = filterRendering,
+        highQualityResultAvailable = highQualityResultAvailable,
+        highQualityFailure = highQualityFailure,
+        enhancementApplied = enhancementApplied,
+        comparing = comparing
+    )
 
     Box(
         modifier = Modifier
@@ -233,12 +262,8 @@ fun MainScanEnhancementReviewScreen(
                         modifier = Modifier
                             .fillMaxSize()
                             .semantics {
-                                contentDescription = imageDescription
-                                stateDescription = if (highQualityResultAvailable) {
-                                    "Full-quality page ready"
-                                } else {
-                                    "Preview only, not saveable"
-                                }
+                                contentDescription = presentation.imageDescription
+                                stateDescription = presentation.imageStateDescription
                             }
                     )
                 }
@@ -260,9 +285,9 @@ fun MainScanEnhancementReviewScreen(
                 }
             }
 
-            if (statusMessage != null) {
+            if (presentation.statusMessage != null) {
                 Text(
-                    text = statusMessage,
+                    text = presentation.statusMessage,
                     color = Color.White,
                     style = MaterialTheme.typography.bodySmall,
                     textAlign = TextAlign.Center,
